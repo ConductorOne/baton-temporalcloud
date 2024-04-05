@@ -26,3 +26,7 @@ add-dep:
 .PHONY: lint
 lint:
 	golangci-lint run
+
+.PHONE: update-upstream
+update-upstream:
+	git submodule update --rebase ./upstream && cp ./upstream/VERSION ./pkg/client/version

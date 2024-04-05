@@ -10,3 +10,14 @@ var userResourceType = &v2.ResourceType{
 	DisplayName: "User",
 	Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_USER},
 }
+
+var namespaceResourceType = &v2.ResourceType{
+	Id:          "namespace",
+	DisplayName: "Namespace",
+}
+
+var accountResourceType = &v2.ResourceType{
+	Id:          "account",
+	DisplayName: "Account",
+	Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_APP},
+}

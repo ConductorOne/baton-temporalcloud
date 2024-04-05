@@ -1,0 +1,19 @@
+version: v1
+managed:
+  enabled: true
+  go_package_prefix:
+    default: github.com/conductorone/baton-temporalcloud/pkg/pb
+    except:
+      - buf.build/googleapis/googleapis
+plugins:
+  - name: go
+    out: pkg/pb
+    strategy: all
+    opt:
+      - paths=source_relative
+  - name: go-grpc
+    out: pkg/pb
+    strategy: all
+    opt:
+      - require_unimplemented_servers=false
+      - paths=source_relative
