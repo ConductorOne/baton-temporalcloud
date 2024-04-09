@@ -1,5 +1,8 @@
 name: ci
 on: pull_request
+env:
+  TEST_NAMESPACE_NAME: "ci-test"
+
 jobs:
   go-lint:
     runs-on: ubuntu-latest
@@ -37,26 +40,38 @@ jobs:
         with:
           test-results: test.json
 
+  setup-temporal-cloud:
+    needs:
+      - go-test
+    runs-on: ubuntu-latest
+    env:
+      TEMPORAL_CLOUD_API_KEY: ${{ secrets.TEMPORAL_CLOUD_API_KEY }}
+    outputs:
+      user-id: ${{ steps.user-id.outputs.user }}
+    steps:
+      - name: Install tcld
+        uses: ./.github/actions/install-tcld
+      - name: Create test namespace
+        run: |
+          tcld gen ca --org c1 -d 30d --ca-cert ./ca.crt --ca-key ./ca.pem && tcld namespace create --ca-certificate $(base64 -e ./ca.crt) --namespace ${{ env.TEST_NAMESPACE_NAME }} --region "aws-us-west-2"
+      - name: Create test user
+        run: |
+          tcld user invite --account-role="Read" --user-email "ci-test@${{ secrets.TEST_EMAIL_DOMAIN}}"
+      - name: Send user ID to job output
+        id: user-id
+        run: |
+          ID=$(tcld user get --user-email "ci-test@${{ secrets.TEST_EMAIL_DOMAIN}}" | jq --exit-status '.id' | tr -d '"'); echo "user=$ID" >> "$GITHUB_OUTPUT"
+
   test:
     runs-on: ubuntu-latest
-    # Define any services needed for the test suite (or delete this section)
-    # services:
-    #   postgres:
-    #     image: postgres:16
-    #     ports:
-    #       - "5432:5432"
-    #     env:
-    #       POSTGRES_PASSWORD: secretpassword
+    needs:
+      - setup-temporal-cloud
     env:
       BATON_LOG_LEVEL: debug
-      # Add any environment variables needed to run baton-temporalcloud
-      # BATON_BASE_URL: 'http://localhost:8080'
-      # BATON_ACCESS_TOKEN: 'secret_token'
-      # The following parameters are passed to grant/revoke commands
-      # Change these to the correct IDs for your test data
-      CONNECTOR_GRANT: 'grant:entitlement:group:1234:member:user:9876'
-      CONNECTOR_ENTITLEMENT: 'entitlement:group:1234:member'
-      CONNECTOR_PRINCIPAL: 'user:9876'
+      BATON_API_KEY: ${{ secrets.TEMPORAL_CLOUD_API_KEY }}
+      CONNECTOR_GRANT: 'namespace:ci-test.iv3js:read:user'
+      CONNECTOR_ENTITLEMENT: 'namespace:ci-test.iv3js:read'
+      CONNECTOR_PRINCIPAL_ID: ${{ needs.setup-temporal-cloud.outputs.user-id }}
       CONNECTOR_PRINCIPAL_TYPE: 'user'
     steps:
       - name: Install Go
@@ -65,40 +80,35 @@ jobs:
           go-version: 1.22.x
       - name: Checkout code
         uses: actions/checkout@v4
-      # Install any dependencies here (or delete this)
-      # - name: Install postgres client
-      #   run: sudo apt install postgresql-client
-      # Run any fixture setup here (or delete this)
-      # - name: Import sql into postgres
-      #   run: psql -h localhost --user postgres -f environment.sql
-      #   env:
-      #     PGPASSWORD: secretpassword
       - name: Build baton-temporalcloud
         run: go build ./cmd/baton-temporalcloud
       - name: Run baton-temporalcloud
         run: ./baton-temporalcloud
-
       - name: Install baton
         run: ./scripts/get-baton.sh && mv baton /usr/local/bin
-
-      - name: Check for grant before revoking
-
-        run:
-          baton grants --entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --output-format=json | jq --exit-status ".grants[].principal.id.resource == \"${{ env.CONNECTOR_PRINCIPAL }}\""
-
-
-      - name: Revoke grants
-        run: ./baton-temporalcloud --revoke-grant="${{ env.CONNECTOR_GRANT }}"
-
-      - name: Check grant was revoked
-        run: ./baton-temporalcloud && baton grants --entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --output-format=json | jq --exit-status "if .grants then .grants[]?.principal.id.resource != \"${{ env.CONNECTOR_PRINCIPAL }}\" else . end"
-
       - name: Grant entitlement
-        # Change the grant arguments to the correct IDs for your test data
-        run: ./baton-temporalcloud --grant-entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --grant-principal="${{ env.CONNECTOR_PRINCIPAL }}" --grant-principal-type="${{ env.CONNECTOR_PRINCIPAL_TYPE }}"
+        run: ./baton-temporalcloud --grant-entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --grant-principal="${{ env.CONNECTOR_PRINCIPAL_TYPE}}:${{ env.CONNECTOR_PRINCIPAL_ID }}" --grant-principal-type="${{ env.CONNECTOR_PRINCIPAL_TYPE }}"
+      - name: Check grant was granted
+        run: |
+          baton grants --entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --output-format=json | jq --exit-status ".grants[].principal.id.resource == \"${{ env.CONNECTOR_PRINCIPAL_TYPE}}:${{ env.CONNECTOR_PRINCIPAL_ID }}\""
+      - name: Revoke grants
+        run: ./baton-temporalcloud --revoke-grant="${{ env.CONNECTOR_GRANT }}:${{ env.CONNECTOR_PRINCIPAL_ID }}"
+      - name: Check grant was revoked
+        run: ./baton-temporalcloud && baton grants --entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --output-format=json | jq --exit-status "if .grants then .grants[]?.principal.id.resource != \"${{ env.CONNECTOR_PRINCIPAL_TYPE}}:${{ env.CONNECTOR_PRINCIPAL_ID }}\" else . end"
 
-      - name: Check grant was re-granted
-
-        run:
-          baton grants --entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --output-format=json | jq --exit-status ".grants[].principal.id.resource == \"${{ env.CONNECTOR_PRINCIPAL }}\""
-
+  teardown-temporal-cloud:
+    runs-on: ubuntu-latest
+    env:
+      TEMPORAL_CLOUD_API_KEY: ${{ secrets.TEMPORAL_CLOUD_API_KEY }}
+    needs:
+      - test
+    if: success() || failure()
+    steps:
+      - name: Install tcld
+        uses: ./.github/actions/install-tcld
+      - name: Delete test namespace
+        run: |
+          tcld namespace delete --namespace ${{ env.TEST_NAMESPACE_NAME }}
+      - name: Delete test user
+        run: |
+          tcld user delete --user-email "ci-test@${{ secrets.TEST_EMAIL_DOMAIN}}"

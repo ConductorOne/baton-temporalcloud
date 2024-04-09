@@ -1,0 +1,22 @@
+name: "Install tcld"
+description: "Install Temporal Cloud management CLI"
+
+runs:
+  using: composite
+  steps:
+    - name: Install Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: "1.22.x"
+    - name: Checkout tcld repo
+      uses: actions/checkout@v4
+      with:
+        repository: temporalio/tcld
+    - name: Build tcld
+      working-directory: ./tcld
+      shell: /bin/bash
+      run: make
+    - name: Move binary
+      shell: /bin/bash
+      run: |
+        mv ./tcld/tcld /usr/local/bin
