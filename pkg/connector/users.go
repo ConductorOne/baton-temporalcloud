@@ -21,7 +21,24 @@ func (o *userBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 // List returns all the users from the database as resource objects.
 // Users include a UserTrait because they are the 'shape' of a standard user.
 func (o *userBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
-	resp, err := o.client.GetUsers(ctx, &cloudservicev1.GetUsersRequest{})
+	bag := &pagination.Bag{}
+	err := bag.Unmarshal(pToken.Token)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	if bag.Current() == nil {
+		bag.Push(pagination.PageState{
+			ResourceTypeID: userResourceType.Id,
+		})
+	}
+
+	req := &cloudservicev1.GetUsersRequest{}
+	if bag.PageToken() != "" {
+		req.PageToken = bag.PageToken()
+	}
+
+	resp, err := o.client.GetUsers(ctx, req)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -35,7 +52,7 @@ func (o *userBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId,
 		rv = append(rv, userResource)
 	}
 
-	return rv, "", nil, nil
+	return paginate(rv, bag, resp.NextPageToken)
 }
 
 // Entitlements always returns an empty slice for users.
