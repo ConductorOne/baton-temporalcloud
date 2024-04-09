@@ -2,10 +2,31 @@
   "@type":  "type.googleapis.com/c1.connector.v2.ConnectorCapabilities",
   "resourceTypeCapabilities":  [
     {
-      "resourceType":  {
-        "id":  "user",
-        "displayName":  "User",
-        "traits":  [
+      "resourceType": {
+        "id": "account",
+        "displayName": "Account",
+        "traits": [
+          "TRAIT_APP"
+        ]
+      },
+      "capabilities": [
+        "CAPABILITY_SYNC"
+      ]
+    },
+    {
+      "resourceType": {
+        "id": "namespace",
+        "displayName": "Namespace"
+      },
+      "capabilities": [
+        "CAPABILITY_SYNC"
+      ]
+    },
+    {
+      "resourceType": {
+        "id": "user",
+        "displayName": "User",
+        "traits": [
           "TRAIT_USER"
         ]
       },
