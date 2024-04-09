@@ -44,6 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TEMPORAL_CLOUD_API_KEY: ${{ secrets.TEMPORAL_CLOUD_API_KEY }}
+      AUTO_CONFIRM: true
     outputs:
       user-id: ${{ steps.user-id.outputs.user }}
     steps:
@@ -53,7 +54,7 @@ jobs:
         uses: ./.github/actions/install-tcld
       - name: Create test namespace
         run: |
-          tcld gen ca --org c1 -d 30d --ca-cert ./ca.crt --ca-key ./ca.pem && tcld namespace create --ca-certificate $(base64 -e ./ca.crt) --namespace ${{ env.TEST_NAMESPACE_NAME }} --region "aws-us-west-2"
+          tcld gen ca --org c1 -d 30d --ca-cert ca.pem --ca-key key.pem && tcld namespace create --ca-certificate-file=ca.pem --namespace=${{ env.TEST_NAMESPACE_NAME }} --region="us-west-2"
       - name: Create test user
         run: |
           tcld user invite --account-role="Read" --user-email "ci-test@${{ secrets.TEST_EMAIL_DOMAIN}}"
@@ -67,7 +68,6 @@ jobs:
     needs:
       - setup-temporal-cloud
     env:
-      BATON_LOG_LEVEL: debug
       BATON_API_KEY: ${{ secrets.TEMPORAL_CLOUD_API_KEY }}
       CONNECTOR_GRANT: 'namespace:ci-test.iv3js:read:user'
       CONNECTOR_ENTITLEMENT: 'namespace:ci-test.iv3js:read'
@@ -87,19 +87,20 @@ jobs:
       - name: Install baton
         run: ./scripts/get-baton.sh && mv baton /usr/local/bin
       - name: Grant entitlement
-        run: ./baton-temporalcloud --grant-entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --grant-principal="${{ env.CONNECTOR_PRINCIPAL_TYPE}}:${{ env.CONNECTOR_PRINCIPAL_ID }}" --grant-principal-type="${{ env.CONNECTOR_PRINCIPAL_TYPE }}"
+        run: ./baton-temporalcloud && ./baton-temporalcloud --grant-entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --grant-principal="${{ env.CONNECTOR_PRINCIPAL_ID }}" --grant-principal-type="${{ env.CONNECTOR_PRINCIPAL_TYPE }}"
       - name: Check grant was granted
         run: |
-          baton grants --entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --output-format=json | jq --exit-status ".grants[].principal.id.resource == \"${{ env.CONNECTOR_PRINCIPAL_TYPE}}:${{ env.CONNECTOR_PRINCIPAL_ID }}\""
+          ./baton-temporalcloud && baton grants --entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --output-format=json | jq --exit-status ".grants[].principal.id.resource == \"${{ env.CONNECTOR_PRINCIPAL_ID }}\""
       - name: Revoke grants
-        run: ./baton-temporalcloud --revoke-grant="${{ env.CONNECTOR_GRANT }}:${{ env.CONNECTOR_PRINCIPAL_ID }}"
+        run: ./baton-temporalcloud && ./baton-temporalcloud --revoke-grant="${{ env.CONNECTOR_GRANT }}:${{ env.CONNECTOR_PRINCIPAL_ID }}"
       - name: Check grant was revoked
-        run: ./baton-temporalcloud && baton grants --entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --output-format=json | jq --exit-status "if .grants then .grants[]?.principal.id.resource != \"${{ env.CONNECTOR_PRINCIPAL_TYPE}}:${{ env.CONNECTOR_PRINCIPAL_ID }}\" else . end"
+        run: ./baton-temporalcloud && baton grants --entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --output-format=json | jq --exit-status "if .grants then .grants[]?.principal.id.resource != \"${{ env.CONNECTOR_PRINCIPAL_ID }}\" else . end"
 
   teardown-temporal-cloud:
     runs-on: ubuntu-latest
     env:
       TEMPORAL_CLOUD_API_KEY: ${{ secrets.TEMPORAL_CLOUD_API_KEY }}
+      AUTO_CONFIRM: true
     needs:
       - test
     if: success() || failure()
@@ -110,7 +111,7 @@ jobs:
         uses: ./.github/actions/install-tcld
       - name: Delete test namespace
         run: |
-          tcld namespace delete --namespace ${{ env.TEST_NAMESPACE_NAME }}
+          tcld namespace delete --namespace "${{ env.TEST_NAMESPACE_NAME }}.iv3js"
       - name: Delete test user
         run: |
           tcld user delete --user-email "ci-test@${{ secrets.TEST_EMAIL_DOMAIN}}"
