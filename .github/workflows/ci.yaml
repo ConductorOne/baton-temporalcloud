@@ -41,14 +41,14 @@ jobs:
           test-results: test.json
 
   setup-temporal-cloud:
-    needs:
-      - go-test
     runs-on: ubuntu-latest
     env:
       TEMPORAL_CLOUD_API_KEY: ${{ secrets.TEMPORAL_CLOUD_API_KEY }}
     outputs:
       user-id: ${{ steps.user-id.outputs.user }}
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
       - name: Install tcld
         uses: ./.github/actions/install-tcld
       - name: Create test namespace
@@ -104,6 +104,8 @@ jobs:
       - test
     if: success() || failure()
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
       - name: Install tcld
         uses: ./.github/actions/install-tcld
       - name: Delete test namespace
