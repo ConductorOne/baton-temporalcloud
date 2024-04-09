@@ -45,7 +45,24 @@ func (o *namespaceBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 }
 
 func (o *namespaceBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
-	resp, err := o.client.GetNamespaces(ctx, &cloudservicev1.GetNamespacesRequest{})
+	bag := &pagination.Bag{}
+	err := bag.Unmarshal(pToken.Token)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	if bag.Current() == nil {
+		bag.Push(pagination.PageState{
+			ResourceTypeID: namespaceResourceType.Id,
+		})
+	}
+
+	req := &cloudservicev1.GetNamespacesRequest{}
+	if bag.PageToken() != "" {
+		req.PageToken = bag.PageToken()
+	}
+
+	resp, err := o.client.GetNamespaces(ctx, req)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -59,7 +76,7 @@ func (o *namespaceBuilder) List(ctx context.Context, parentResourceID *v2.Resour
 		rv = append(rv, nsResource)
 	}
 
-	return rv, "", nil, nil
+	return paginate(rv, bag, resp.NextPageToken)
 }
 
 func (o *namespaceBuilder) Entitlements(_ context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {

@@ -7,6 +7,8 @@ import (
 	"time"
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/annotations"
+	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	"github.com/conductorone/baton-sdk/pkg/types/resource"
 	"go.uber.org/zap"
@@ -112,4 +114,16 @@ func checkAsyncOperation(ctx context.Context, client cloudservicev1.CloudService
 	}
 
 	return false, nil
+}
+
+func paginate[T any](rv T, bag *pagination.Bag, pageToken string) (T, string, annotations.Annotations, error) {
+	if pageToken == "" {
+		return rv, "", nil, nil
+	}
+
+	token, err := bag.NextToken(pageToken)
+	if err != nil {
+		return rv, "", nil, err
+	}
+	return rv, token, nil, nil
 }
