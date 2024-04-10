@@ -76,14 +76,14 @@ func (o *namespaceBuilder) List(ctx context.Context, parentResourceID *v2.Resour
 		rv = append(rv, nsResource)
 	}
 
-	return paginate(rv, bag, resp.NextPageToken)
+	return paginate(rv, bag, resp.GetNextPageToken())
 }
 
 func (o *namespaceBuilder) Entitlements(_ context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
 	rv := make([]*v2.Entitlement, 0, len(namespaceAccessLevels))
 	for _, level := range namespaceAccessLevels {
 		annos := &v2.V1Identifier{
-			Id: fmt.Sprintf("namespace:%s:role:%s", resource.Id.Resource, level),
+			Id: namespaceEntitlementID(resource.GetId().GetResource(), level),
 		}
 		e := entitlement.NewPermissionEntitlement(
 			resource, level,
@@ -99,7 +99,24 @@ func (o *namespaceBuilder) Entitlements(_ context.Context, resource *v2.Resource
 }
 
 func (o *namespaceBuilder) Grants(ctx context.Context, resource *v2.Resource, pToken *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
-	resp, err := o.client.GetUsers(ctx, &cloudservicev1.GetUsersRequest{Namespace: resource.DisplayName})
+	bag := &pagination.Bag{}
+	err := bag.Unmarshal(pToken.Token)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	if bag.Current() == nil {
+		bag.Push(pagination.PageState{
+			ResourceTypeID: resource.GetId().GetResourceType(),
+			ResourceID:     resource.GetId().GetResource(),
+		})
+	}
+
+	req := &cloudservicev1.GetUsersRequest{Namespace: resource.GetDisplayName()}
+	if bag.PageToken() != "" {
+		req.PageToken = bag.PageToken()
+	}
+
+	resp, err := o.client.GetUsers(ctx, req)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -118,7 +135,7 @@ func (o *namespaceBuilder) Grants(ctx context.Context, resource *v2.Resource, pT
 		rv = append(rv, g)
 	}
 
-	return rv, "", nil, nil
+	return paginate(rv, bag, resp.GetNextPageToken())
 }
 
 func (o *namespaceBuilder) Grant(ctx context.Context, principal *v2.Resource, e *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
