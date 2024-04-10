@@ -69,9 +69,7 @@ func (o *accountRoleBuilder) getAccountRoles(ctx context.Context) ([]*auth.Role,
 		return nil, err
 	}
 
-	for _, role := range resp.GetRoles() {
-		o.accountRolesCache = append(o.accountRolesCache, role)
-	}
+	o.accountRolesCache = append(o.accountRolesCache, resp.GetRoles()...)
 
 	return o.accountRolesCache, nil
 }
@@ -99,7 +97,11 @@ func (o *accountRoleBuilder) Entitlements(_ context.Context, r *v2.Resource, _ *
 		Id: fmt.Sprintf("membership:%s", r.Id.Resource),
 	}
 
-	member := entitlement.NewAssignmentEntitlement(r, roleMemberEntitlement, entitlement.WithGrantableTo(userResourceType), entitlement.WithDescription(fmt.Sprintf("Has the %s role in Temporal Cloud", r.GetDisplayName())), entitlement.WithDisplayName(fmt.Sprintf("%s Role Member", r.GetDisplayName())), entitlement.WithAnnotation(annos))
+	member := entitlement.NewAssignmentEntitlement(r, roleMemberEntitlement,
+		entitlement.WithGrantableTo(userResourceType),
+		entitlement.WithDescription(fmt.Sprintf("Has the %s role in Temporal Cloud", r.GetDisplayName())),
+		entitlement.WithDisplayName(fmt.Sprintf("%s Role Member", r.GetDisplayName())),
+		entitlement.WithAnnotation(annos))
 	return []*v2.Entitlement{member}, "", nil, nil
 }
 
