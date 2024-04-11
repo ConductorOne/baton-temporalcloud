@@ -16,8 +16,8 @@ var namespaceResourceType = &v2.ResourceType{
 	DisplayName: "Namespace",
 }
 
-var accountResourceType = &v2.ResourceType{
-	Id:          "account",
-	DisplayName: "Account",
-	Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_APP},
+var accountRoleResourceType = &v2.ResourceType{
+	Id:          "account-role",
+	DisplayName: "Account Role",
+	Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_ROLE},
 }

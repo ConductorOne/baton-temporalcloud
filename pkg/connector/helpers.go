@@ -11,6 +11,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	"github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/temporalio/tcld/protogen/api/auth/v1"
 	"go.uber.org/zap"
 
 	cloudservicev1 "github.com/conductorone/baton-temporalcloud/pkg/pb/temporal/api/cloud/cloudservice/v1"
@@ -23,9 +24,25 @@ func protoUserToResource(proto *identityv1.User) (*v2.Resource, error) {
 		Id: fmt.Sprintf("user:%s", proto.GetSpec().GetEmail()),
 	}
 
-	user, err := resource.NewUserResource(proto.GetSpec().GetEmail(), userResourceType, proto.Id, []resource.UserTraitOption{
+	user, err := resource.NewUserResource(proto.GetSpec().GetEmail(), userResourceType, proto.GetId(), []resource.UserTraitOption{
 		resource.WithEmail(proto.GetSpec().GetEmail(), true),
 		resource.WithCreatedAt(proto.GetCreatedTime().AsTime()),
+		resource.WithAccountType(v2.UserTrait_ACCOUNT_TYPE_HUMAN),
+	}, resource.WithAnnotation(annos))
+	if err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
+func authProtoUserToResource(proto *auth.User) (*v2.Resource, error) {
+	annos := &v2.V1Identifier{
+		Id: fmt.Sprintf("user:%s", proto.GetSpec().GetEmail()),
+	}
+
+	user, err := resource.NewUserResource(proto.GetSpec().GetEmail(), userResourceType, proto.GetId(), []resource.UserTraitOption{
+		resource.WithEmail(proto.GetSpec().GetEmail(), true),
+		resource.WithCreatedAt(time.Unix(proto.GetCreatedTime().GetSeconds(), int64(proto.GetCreatedTime().GetNanos()))),
 		resource.WithAccountType(v2.UserTrait_ACCOUNT_TYPE_HUMAN),
 	}, resource.WithAnnotation(annos))
 	if err != nil {
@@ -47,6 +64,20 @@ func protoNamespaceToResource(proto *namespacev1.Namespace) (*v2.Resource, error
 	return ns, nil
 }
 
+func protoAccountRoleToResource(proto *auth.Role) (*v2.Resource, error) {
+	ar := proto.GetSpec().GetAccountRole().GetActionGroup().String()
+	annos := &v2.V1Identifier{
+		Id: fmt.Sprintf("account-role:%s", strings.ToLower(ar)),
+	}
+
+	role, err := resource.NewRoleResource(fmt.Sprintf("Account %s", ar), accountRoleResourceType, proto.GetId(), []resource.RoleTraitOption{}, resource.WithAnnotation(annos))
+	if err != nil {
+		return nil, err
+	}
+
+	return role, nil
+}
+
 func createNamespaceGrant(user *identityv1.User, namespace *v2.Resource, permission string) (*v2.Grant, error) {
 	permission = strings.ToLower(permission)
 	ur, err := protoUserToResource(user)
@@ -54,25 +85,23 @@ func createNamespaceGrant(user *identityv1.User, namespace *v2.Resource, permiss
 		return nil, err
 	}
 	annos := &v2.V1Identifier{
-		Id: fmt.Sprintf("namespace-grant:%s:%s:%s", namespace.GetId().GetResource(), ur.GetId().GetResource(), permission),
+		Id: grantID(namespaceEntitlementID(namespace.GetId().GetResource(), permission), ur.GetId().GetResource()),
 	}
 	g := grant.NewGrant(namespace, permission, ur.GetId(), grant.WithAnnotation(annos))
 	g.Principal = ur
 	return g, nil
 }
 
-func createAccountGrant(user *identityv1.User, account *v2.Resource, permission string) (*v2.Grant, error) {
-	permission = strings.ToLower(permission)
-	ur, err := protoUserToResource(user)
+func createAccountRoleGrant(user *auth.User, ar *v2.Resource) (*v2.Grant, error) {
+	ur, err := authProtoUserToResource(user)
 	if err != nil {
 		return nil, err
 	}
 	annos := &v2.V1Identifier{
-		Id: fmt.Sprintf("account-grand:%s:%s:%s", account.GetId().GetResource(), ur.GetId().GetResource(), permission),
+		Id: grantID(membershipEntitlementID(ar.GetId().GetResource()), ur.GetId().GetResource()),
 	}
-	g := grant.NewGrant(account, permission, ur.GetId(), grant.WithAnnotation(annos))
-	g.Principal = ur
 
+	g := grant.NewGrant(ar, roleMemberEntitlement, ur.GetId(), grant.WithAnnotation(annos))
 	return g, nil
 }
 
@@ -126,4 +155,22 @@ func paginate[T any](rv T, bag *pagination.Bag, pageToken string) (T, string, an
 		return rv, "", nil, err
 	}
 	return rv, token, nil, nil
+}
+
+const (
+	membershipEntitlementIDTemplate = "membership:%s"
+	namespaceEntitlementIDTemplate  = "namespace:%s:%s"
+	grantIDTemplate                 = "grant:%s:%s"
+)
+
+func grantID(entitlementID string, userID string) string {
+	return fmt.Sprintf(grantIDTemplate, entitlementID, userID)
+}
+
+func membershipEntitlementID(resourceID string) string {
+	return fmt.Sprintf(membershipEntitlementIDTemplate, resourceID)
+}
+
+func namespaceEntitlementID(resourceID string, role string) string {
+	return fmt.Sprintf(namespaceEntitlementIDTemplate, resourceID, role)
 }
