@@ -1,36 +1,36 @@
 {
-  "@type":  "type.googleapis.com/c1.connector.v2.ConnectorCapabilities",
-  "resourceTypeCapabilities":  [
+  "@type": "type.googleapis.com/c1.connector.v2.ConnectorCapabilities",
+  "resourceTypeCapabilities": [
     {
-      "resourceType":  {
-        "id":  "account",
-        "displayName":  "Account",
-        "traits":  [
-          "TRAIT_APP"
+      "resourceType": {
+        "id": "account-role",
+        "displayName": "Account Role",
+        "traits": [
+          "TRAIT_ROLE"
         ]
       },
-      "capabilities":  [
+      "capabilities": [
         "CAPABILITY_SYNC"
       ]
     },
     {
-      "resourceType":  {
-        "id":  "namespace",
-        "displayName":  "Namespace"
+      "resourceType": {
+        "id": "namespace",
+        "displayName": "Namespace"
       },
-      "capabilities":  [
+      "capabilities": [
         "CAPABILITY_SYNC"
       ]
     },
     {
-      "resourceType":  {
-        "id":  "user",
-        "displayName":  "User",
-        "traits":  [
+      "resourceType": {
+        "id": "user",
+        "displayName": "User",
+        "traits": [
           "TRAIT_USER"
         ]
       },
-      "capabilities":  [
+      "capabilities": [
         "CAPABILITY_SYNC"
       ]
     }
