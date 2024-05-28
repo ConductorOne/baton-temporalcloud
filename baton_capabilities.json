@@ -10,7 +10,8 @@
         ]
       },
       "capabilities":  [
-        "CAPABILITY_SYNC"
+        "CAPABILITY_SYNC",
+        "CAPABILITY_PROVISION"
       ]
     },
     {
@@ -19,7 +20,8 @@
         "displayName":  "Namespace"
       },
       "capabilities":  [
-        "CAPABILITY_SYNC"
+        "CAPABILITY_SYNC",
+        "CAPABILITY_PROVISION"
       ]
     },
     {
@@ -34,5 +36,9 @@
         "CAPABILITY_SYNC"
       ]
     }
+  ],
+  "connectorCapabilities":  [
+    "CAPABILITY_SYNC",
+    "CAPABILITY_PROVISION"
   ]
 }
