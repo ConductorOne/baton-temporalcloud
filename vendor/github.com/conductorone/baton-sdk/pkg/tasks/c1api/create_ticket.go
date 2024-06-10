@@ -29,7 +29,7 @@ func (c *createTicketTaskHandler) HandleTask(ctx context.Context) error {
 
 	t := c.task.GetCreateTicketTask()
 	if t == nil || t.GetTicketRequest() == nil {
-		l.Error("create ticket task was nil or missing ticket request", zap.Any("create_resource_task", t))
+		l.Error("create ticket task was nil or missing ticket request", zap.Any("create_ticket_task", t))
 		return c.helpers.FinishTask(ctx, nil, nil, errors.Join(errors.New("malformed create ticket task"), ErrTaskNonRetryable))
 	}
 
@@ -44,7 +44,12 @@ func (c *createTicketTaskHandler) HandleTask(ctx context.Context) error {
 		return c.helpers.FinishTask(ctx, nil, nil, errors.Join(err, ErrTaskNonRetryable))
 	}
 
-	return c.helpers.FinishTask(ctx, resp, resp.GetAnnotations(), nil)
+	respAnnos := annotations.Annotations(resp.GetAnnotations())
+	respAnnos.Merge(t.GetAnnotations()...)
+
+	resp.Annotations = respAnnos
+
+	return c.helpers.FinishTask(ctx, resp, respAnnos, nil)
 }
 
 func newCreateTicketTaskHandler(task *v1.Task, helpers createTicketTaskHelpers) *createTicketTaskHandler {
