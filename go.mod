@@ -5,7 +5,7 @@ go 1.22
 toolchain go1.22.1
 
 require (
-	github.com/conductorone/baton-sdk v0.1.38
+	github.com/conductorone/baton-sdk v0.1.47
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
 	github.com/spf13/cobra v1.8.0
 	github.com/temporalio/tcld v0.21.0
@@ -39,6 +39,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.28.6 // indirect
 	github.com/aws/smithy-go v1.20.2 // indirect
 	github.com/benbjohnson/clock v1.3.5 // indirect
+	github.com/deckarep/golang-set/v2 v2.6.0 // indirect
 	github.com/doug-martin/goqu/v9 v9.19.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/envoyproxy/protoc-gen-validate v1.0.4 // indirect
@@ -76,6 +77,8 @@ require (
 	github.com/tklauser/go-sysconf v0.3.14 // indirect
 	github.com/tklauser/numcpus v0.8.0 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
+	go.opentelemetry.io/otel v1.27.0 // indirect
+	go.opentelemetry.io/otel/metric v1.27.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/ratelimit v0.3.1 // indirect
 	golang.org/x/crypto v0.23.0 // indirect
