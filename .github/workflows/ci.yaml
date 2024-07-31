@@ -57,11 +57,30 @@ jobs:
           tcld gen ca --org c1 -d 30d --ca-cert ca.pem --ca-key key.pem && tcld namespace create --ca-certificate-file=ca.pem --namespace=${{ env.TEST_NAMESPACE_NAME }} --region="us-west-2"
       - name: Create test user
         run: |
-          tcld user invite --account-role="Read" --user-email "ci-test@${{ secrets.TEST_EMAIL_DOMAIN}}"
+          if ! request_id=$(tcld user invite --account-role="Read" --user-email "ci-test@${{ secrets.TEST_EMAIL_DOMAIN}}" | jq --exit-status '.requestId' | tr -d '"'); then
+            exit 1
+          fi
+          while true; do
+            if ! resp=$(tcld request get --request-id=$request_id | jq --exit-status '.requestStatus'); then
+              exit 1
+            fi
+            if ! request_state=$(echo $resp | jq --exit-status '.state' | tr -d '"'); then
+              exit 1
+            fi
+            if ! failure_reason=$(echo $resp | jq --exit-status '.failureReason' | tr -d '"'); then
+              exit 1
+            fi
+            if [[ "$failure_reason" != "" ]]; then
+              exit 1
+            fi
+            if [[ "$request_state" == "Fulfilled" ]]; then
+              break
+            fi
+          done
       - name: Send user ID to job output
         id: user-id
         run: |
-          ID=$(tcld user get --user-email "ci-test@${{ secrets.TEST_EMAIL_DOMAIN}}" | jq --exit-status '.id' | tr -d '"'); echo "user=$ID" >> "$GITHUB_OUTPUT"
+          ID=$(tcld user get --user-email "ci-test@${{ secrets.TEST_EMAIL_DOMAIN}}" | jq --exit-status '.id' | tr -d '"') && echo "user=$ID" >> "$GITHUB_OUTPUT"
 
   test:
     runs-on: ubuntu-latest
