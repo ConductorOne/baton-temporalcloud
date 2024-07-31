@@ -17,7 +17,7 @@ import (
 	"github.com/temporalio/tcld/protogen/api/authservice/v1"
 	"go.uber.org/zap"
 
-	cloudservicev1 "github.com/conductorone/baton-temporalcloud/pkg/pb/temporal/api/cloud/cloudservice/v1"
+	cloudservicev1 "go.temporal.io/api/cloud/cloudservice/v1"
 )
 
 const (

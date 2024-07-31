@@ -14,9 +14,9 @@ import (
 	"github.com/temporalio/tcld/protogen/api/auth/v1"
 	"go.uber.org/zap"
 
-	cloudservicev1 "github.com/conductorone/baton-temporalcloud/pkg/pb/temporal/api/cloud/cloudservice/v1"
-	identityv1 "github.com/conductorone/baton-temporalcloud/pkg/pb/temporal/api/cloud/identity/v1"
-	namespacev1 "github.com/conductorone/baton-temporalcloud/pkg/pb/temporal/api/cloud/namespace/v1"
+	cloudservicev1 "go.temporal.io/api/cloud/cloudservice/v1"
+	identityv1 "go.temporal.io/api/cloud/identity/v1"
+	namespacev1 "go.temporal.io/api/cloud/namespace/v1"
 )
 
 func protoUserToResource(proto *identityv1.User) (*v2.Resource, error) {

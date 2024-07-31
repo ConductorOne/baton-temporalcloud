@@ -9,8 +9,9 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	"github.com/temporalio/tcld/protogen/api/authservice/v1"
 
+	cloudservicev1 "go.temporal.io/api/cloud/cloudservice/v1"
+
 	"github.com/conductorone/baton-temporalcloud/pkg/client"
-	cloudservicev1 "github.com/conductorone/baton-temporalcloud/pkg/pb/temporal/api/cloud/cloudservice/v1"
 )
 
 type Connector struct {
