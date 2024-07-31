@@ -5,7 +5,7 @@ go 1.22
 toolchain go1.22.1
 
 require (
-	github.com/conductorone/baton-sdk v0.1.47
+	github.com/conductorone/baton-sdk v0.2.13
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
 	github.com/spf13/cobra v1.8.1
 	github.com/temporalio/tcld v0.29.0
