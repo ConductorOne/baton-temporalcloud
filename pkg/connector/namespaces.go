@@ -157,7 +157,7 @@ func (o *namespaceBuilder) Grant(ctx context.Context, principal *v2.Resource, e 
 		existing, ok := ns[namespaceID]
 		if ok && existing.GetPermission() == namespaceRole {
 			annos := annotations.New(&v2.GrantAlreadyExists{})
-			return nil, annos, fmt.Errorf("temporalcloud-connector: grant already exists")
+			return nil, annos, nil
 		}
 		ns[namespaceID] = perm
 	}
