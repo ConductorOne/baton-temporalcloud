@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"time"
@@ -43,22 +44,29 @@ type Syncer interface {
 
 // syncer orchestrates a connector sync and stores the results using the provided datasource.Writer.
 type syncer struct {
-	c1zManager        manager.Manager
-	c1zPath           string
-	store             connectorstore.Writer
-	connector         types.ConnectorClient
-	state             State
-	runDuration       time.Duration
-	transitionHandler func(s Action)
-	progressHandler   func(p *Progress)
-	tmpDir            string
-	skipFullSync      bool
+	c1zManager         manager.Manager
+	c1zPath            string
+	store              connectorstore.Writer
+	connector          types.ConnectorClient
+	state              State
+	runDuration        time.Duration
+	transitionHandler  func(s Action)
+	progressHandler    func(p *Progress)
+	tmpDir             string
+	skipFullSync       bool
+	lastCheckPointTime time.Time
 
 	skipEGForResourceType map[string]bool
 }
 
+const minCheckpointInterval = 10 * time.Second
+
 // Checkpoint marshals the current state and stores it.
 func (s *syncer) Checkpoint(ctx context.Context) error {
+	if !s.lastCheckPointTime.IsZero() && time.Since(s.lastCheckPointTime) < minCheckpointInterval {
+		return nil
+	}
+	s.lastCheckPointTime = time.Now()
 	checkpoint, err := s.state.Marshal()
 	if err != nil {
 		return err
@@ -92,16 +100,41 @@ func shouldWaitAndRetry(ctx context.Context, err error) bool {
 		attempts = 0
 		return true
 	}
-	if status.Code(err) != codes.Unavailable {
+	if status.Code(err) != codes.Unavailable && status.Code(err) != codes.DeadlineExceeded {
 		return false
 	}
 
 	attempts++
 	l := ctxzap.Extract(ctx)
 
+	// use linear time by default
 	var wait time.Duration = time.Duration(attempts) * time.Second
 
-	l.Error("retrying operation", zap.Error(err), zap.Duration("wait", wait))
+	// If error contains rate limit data, use that instead
+	if st, ok := status.FromError(err); ok {
+		details := st.Details()
+		for _, detail := range details {
+			if rlData, ok := detail.(*v2.RateLimitDescription); ok {
+				waitResetAt := time.Until(rlData.ResetAt.AsTime())
+				if waitResetAt <= 0 {
+					continue
+				}
+				duration := time.Duration(rlData.Limit)
+				if duration <= 0 {
+					continue
+				}
+				waitResetAt /= duration
+				// Round up to the nearest second to make sure we don't hit the rate limit again
+				waitResetAt = time.Duration(math.Ceil(waitResetAt.Seconds())) * time.Second
+				if waitResetAt > 0 {
+					wait = waitResetAt
+					break
+				}
+			}
+		}
+	}
+
+	l.Warn("retrying operation", zap.Error(err), zap.Duration("wait", wait))
 
 	for {
 		select {
@@ -235,7 +268,7 @@ func (s *syncer) Sync(ctx context.Context) error {
 
 		case SyncAssetsOp:
 			err = s.SyncAssets(ctx)
-			if err != nil {
+			if !shouldWaitAndRetry(ctx, err) {
 				return err
 			}
 			continue
@@ -267,6 +300,11 @@ func (s *syncer) Sync(ctx context.Context) error {
 	err = s.store.Cleanup(ctx)
 	if err != nil {
 		return err
+	}
+
+	_, err = s.connector.Cleanup(ctx, &v2.ConnectorServiceCleanupRequest{})
+	if err != nil {
+		l.Error("error clearing connector caches", zap.Error(err))
 	}
 
 	return nil
@@ -786,7 +824,7 @@ func (s *syncer) SyncGrantExpansion(ctx context.Context) error {
 		pageToken := s.state.PageToken(ctx)
 
 		if pageToken == "" {
-			ctxzap.Extract(ctx).Info("Expanding grants...")
+			l.Info("Expanding grants...")
 			s.handleInitialActionForStep(ctx, *s.state.Current())
 		}
 
@@ -823,7 +861,7 @@ func (s *syncer) SyncGrantExpansion(ctx context.Context) error {
 
 			// FIXME(morgabra) Log and skip some of the error paths here?
 			for _, srcEntitlementID := range expandable.EntitlementIds {
-				ctxzap.Extract(ctx).Debug(
+				l.Debug(
 					"Expandable entitlement found",
 					zap.String("src_entitlement_id", srcEntitlementID),
 					zap.String("dst_entitlement_id", grant.GetEntitlement().GetId()),
@@ -833,7 +871,12 @@ func (s *syncer) SyncGrantExpansion(ctx context.Context) error {
 					EntitlementId: srcEntitlementID,
 				})
 				if err != nil {
-					return err
+					l.Error("error fetching source entitlement",
+						zap.String("src_entitlement_id", srcEntitlementID),
+						zap.String("dst_entitlement_id", grant.GetEntitlement().GetId()),
+						zap.Error(err),
+					)
+					continue
 				}
 
 				// The expand annotation points at entitlements by id. Those entitlements' resource should match
@@ -1325,7 +1368,7 @@ func (s *syncer) runGrantExpandActions(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-func (s *syncer) newExpandedGrant(ctx context.Context, descEntitlement *v2.Entitlement, principal *v2.Resource) (*v2.Grant, error) {
+func (s *syncer) newExpandedGrant(_ context.Context, descEntitlement *v2.Entitlement, principal *v2.Resource) (*v2.Grant, error) {
 	enResource := descEntitlement.GetResource()
 	if enResource == nil {
 		return nil, fmt.Errorf("newExpandedGrant: entitlement has no resource")
