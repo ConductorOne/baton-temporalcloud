@@ -8,11 +8,14 @@ import (
 	"net/url"
 	"strings"
 
+	cloudservicev1 "go.temporal.io/api/cloud/cloudservice/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 )
+
+const tmprlCloudAPIAddr = "saas-api.tmprl.cloud:443"
 
 //go:embed version
 var temporalCloudAPIVersion string
@@ -58,4 +61,71 @@ func defaultDialOptions(addr *url.URL, allowInsecure bool) []grpc.DialOption {
 func apiVersionInterceptor(ctx context.Context, method string, req any, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 	ctx = metadata.AppendToOutgoingContext(ctx, "temporal-cloud-api-version", strings.TrimSpace(temporalCloudAPIVersion))
 	return invoker(ctx, method, req, reply, cc, opts...)
+}
+
+var _ cloudservicev1.CloudServiceClient = (*Client)(nil)
+
+type Client struct {
+	cloudservicev1.CloudServiceClient
+
+	accountID string
+}
+
+func (c *Client) GetAccountID(ctx context.Context) (string, error) {
+	if c.accountID != "" {
+		return c.accountID, nil
+	}
+
+	resp, err := c.GetAccount(ctx, &cloudservicev1.GetAccountRequest{})
+	if err != nil {
+		return "", err
+	}
+
+	return resp.GetAccount().GetId(), nil
+}
+
+type config struct {
+	allowInsecure bool
+	addr          string
+}
+
+func newConfig() *config {
+	return &config{
+		addr: tmprlCloudAPIAddr,
+	}
+}
+
+type Opt func(c *config) error
+
+func WithAPIAddress(addr string) Opt {
+	return func(c *config) error {
+		c.addr = addr
+		return nil
+	}
+}
+
+func AllowInsecure() Opt {
+	return func(c *config) error {
+		c.allowInsecure = true
+		return nil
+	}
+}
+
+func New(apiKey string, opts ...Opt) (*Client, error) {
+	cfg := newConfig()
+	for _, opt := range opts {
+		if err := opt(cfg); err != nil {
+			return nil, fmt.Errorf("failed to configure client: %w", err)
+		}
+	}
+
+	conn, err := NewConnectionWithAPIKey(cfg.addr, cfg.allowInsecure, apiKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create connection: %w", err)
+	}
+	cClient := cloudservicev1.NewCloudServiceClient(conn)
+
+	return &Client{
+		CloudServiceClient: cClient,
+	}, nil
 }

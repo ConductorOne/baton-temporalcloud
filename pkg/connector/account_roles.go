@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
@@ -13,11 +12,13 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
-	"github.com/temporalio/tcld/protogen/api/auth/v1"
-	"github.com/temporalio/tcld/protogen/api/authservice/v1"
+	identityv1 "go.temporal.io/api/cloud/identity/v1"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/proto"
 
 	cloudservicev1 "go.temporal.io/api/cloud/cloudservice/v1"
+
+	"github.com/conductorone/baton-temporalcloud/pkg/client"
 )
 
 const (
@@ -28,61 +29,30 @@ const (
 	roleMemberEntitlement = "member"
 )
 
+var accountRoles = []identityv1.AccountAccess_Role{
+	identityv1.AccountAccess_ROLE_OWNER,
+	identityv1.AccountAccess_ROLE_ADMIN,
+	identityv1.AccountAccess_ROLE_DEVELOPER,
+	identityv1.AccountAccess_ROLE_FINANCE_ADMIN,
+	identityv1.AccountAccess_ROLE_READ,
+}
+
 type accountRoleBuilder struct {
-	client                cloudservicev1.CloudServiceClient
-	authServiceClient     authservice.AuthServiceClient
-	accountRoleCacheMutex sync.Mutex
-	accountRolesCache     []*auth.Role
+	client *client.Client
 }
 
 func (o *accountRoleBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 	return accountRoleResourceType
 }
 
-func (o *accountRoleBuilder) getAccountRoles(ctx context.Context) ([]*auth.Role, error) {
-	o.accountRoleCacheMutex.Lock()
-	defer o.accountRoleCacheMutex.Unlock()
-	if o.accountRolesCache != nil {
-		return o.accountRolesCache, nil
-	}
-
-	req := &authservice.GetRolesByPermissionsRequest{Specs: []*auth.RoleSpec{
-		{
-			AccountRole: &auth.AccountRoleSpec{
-				ActionGroup: auth.ACCOUNT_ACTION_GROUP_READ,
-			},
-		},
-		{
-			AccountRole: &auth.AccountRoleSpec{
-				ActionGroup: auth.ACCOUNT_ACTION_GROUP_DEVELOPER,
-			},
-		},
-		{
-			AccountRole: &auth.AccountRoleSpec{
-				ActionGroup: auth.ACCOUNT_ACTION_GROUP_ADMIN,
-			},
-		},
-	}}
-
-	resp, err := o.authServiceClient.GetRolesByPermissions(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-
-	o.accountRolesCache = append(o.accountRolesCache, resp.GetRoles()...)
-
-	return o.accountRolesCache, nil
-}
-
 func (o *accountRoleBuilder) List(ctx context.Context, _ *v2.ResourceId, _ *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
-	resp, err := o.getAccountRoles(ctx)
+	accountID, err := o.client.GetAccountID(ctx)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, "", nil, fmt.Errorf("failed to get account ID: %w", err)
 	}
-
 	var rv []*v2.Resource
-	for _, role := range resp {
-		roleResource, err := protoAccountRoleToResource(role)
+	for _, role := range accountRoles {
+		roleResource, err := protoAccountRoleToResource(role, accountID)
 		if err != nil {
 			return nil, "", nil, err
 		}
@@ -92,22 +62,40 @@ func (o *accountRoleBuilder) List(ctx context.Context, _ *v2.ResourceId, _ *pagi
 	return rv, "", nil, nil
 }
 
-func (o *accountRoleBuilder) Entitlements(_ context.Context, r *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
-	annos := &v2.V1Identifier{
-		Id: fmt.Sprintf("membership:%s", r.Id.Resource),
+func (o *accountRoleBuilder) Entitlements(ctx context.Context, r *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
+	accountID, err := o.client.GetAccountID(ctx)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	ar := accountAccessRoleFromID(r.GetId().GetResource(), accountID)
+
+	annos := []proto.Message{
+		&v2.V1Identifier{
+			Id: fmt.Sprintf("membership:%s", r.GetId().GetResource()),
+		},
+	}
+
+	if slices.Contains(immutableAccountRoles, ar) {
+		annos = append(annos, &v2.EntitlementImmutable{})
 	}
 
 	member := entitlement.NewAssignmentEntitlement(r, roleMemberEntitlement,
 		entitlement.WithGrantableTo(userResourceType),
 		entitlement.WithDescription(fmt.Sprintf("Has the %s role in Temporal Cloud", r.GetDisplayName())),
 		entitlement.WithDisplayName(fmt.Sprintf("%s Role Member", r.GetDisplayName())),
-		entitlement.WithAnnotation(annos))
+		entitlement.WithAnnotation(annos...))
 	return []*v2.Entitlement{member}, "", nil, nil
 }
 
 func (o *accountRoleBuilder) Grants(ctx context.Context, r *v2.Resource, pToken *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
+	accountID, err := o.client.GetAccountID(ctx)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
 	bag := &pagination.Bag{}
-	err := bag.Unmarshal(pToken.Token)
+	err = bag.Unmarshal(pToken.Token)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -117,22 +105,22 @@ func (o *accountRoleBuilder) Grants(ctx context.Context, r *v2.Resource, pToken 
 			ResourceID:     r.Id.Resource,
 		})
 	}
-	req := &authservice.GetUsersRequest{}
+	req := &cloudservicev1.GetUsersRequest{}
 	if bag.PageToken() != "" {
 		req.PageToken = bag.PageToken()
 	}
 
-	resp, err := o.authServiceClient.GetUsers(ctx, req)
+	resp, err := o.client.GetUsers(ctx, req)
 	if err != nil {
 		return nil, "", nil, err
 	}
 
 	var rv []*v2.Grant
 	for _, user := range resp.GetUsers() {
-		if !slices.Contains(user.GetSpec().GetRoles(), r.Id.Resource) {
+		if user.GetSpec().GetAccess().GetAccountAccess().GetRole() != accountAccessRoleFromID(r.Id.Resource, accountID) {
 			continue
 		}
-		grantResource, err := createAccountRoleGrant(user, r)
+		grantResource, err := createAccountRoleGrant(user, r, accountID)
 		if err != nil {
 			return nil, "", nil, err
 		}
@@ -142,6 +130,11 @@ func (o *accountRoleBuilder) Grants(ctx context.Context, r *v2.Resource, pToken 
 }
 
 func (o *accountRoleBuilder) Grant(ctx context.Context, principal *v2.Resource, e *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
+	accountID, err := o.client.GetAccountID(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	entitlementID := e.GetId()
 	userID := principal.GetId().GetResource()
 	userType := principal.GetId().GetResourceType()
@@ -149,52 +142,41 @@ func (o *accountRoleBuilder) Grant(ctx context.Context, principal *v2.Resource, 
 	accountRoleID := accountRole.GetId().GetResource()
 	accountRoleType := accountRole.GetId().GetResourceType()
 
-	userResp, err := o.authServiceClient.GetUser(ctx, &authservice.GetUserRequest{UserId: userID})
+	userResp, err := o.client.GetUser(ctx, &cloudservicev1.GetUserRequest{UserId: userID})
 	if err != nil {
 		return nil, nil, fmt.Errorf("temporalcloud-connnector: couldn't retrieve user: %w", err)
 	}
 
-	var roleIDs []string
-	var newRole *auth.Role
-	roles, err := o.getAccountRoles(ctx)
-	if err != nil {
-		return nil, nil, err
+	newRole := accountAccessRoleFromID(accountRoleID, accountID)
+	if newRole == identityv1.AccountAccess_ROLE_UNSPECIFIED {
+		return nil, nil, fmt.Errorf("temporalcloud-connector: invalid account role %s", strings.TrimPrefix(accountRoleID, accountID+"-"))
 	}
-	for _, role := range roles {
-		roleIDs = append(roleIDs, role.GetId())
-		if accountRoleID == role.GetId() {
-			newRole = role
-		}
+
+	if slices.Contains(immutableAccountRoles, newRole) {
+		return nil, nil, fmt.Errorf("temporalcloud-connector: role %s is immutable and cannot be granted", accountRoleDisplayName(newRole))
 	}
 
 	user := userResp.GetUser()
 	spec := user.GetSpec()
 
-	if strings.ToLower(newRole.GetSpec().GetAccountRole().GetActionGroup().String()) == "admin" {
-		spec.Roles = []string{accountRoleID}
-	} else {
-		if slices.Contains(spec.GetRoles(), accountRoleID) {
-			g, err := createAccountRoleGrant(user, accountRole)
-			if err != nil {
-				return nil, nil, err
-			}
-			return []*v2.Grant{g}, nil, nil
-		}
-
-		spec.Roles = slices.DeleteFunc(spec.GetRoles(), func(s string) bool {
-			return slices.Contains(roleIDs, s)
-		})
-		spec.Roles = append(spec.GetRoles(), accountRoleID)
+	newSpec := &identityv1.UserSpec{
+		Email: spec.GetEmail(),
+		Access: &identityv1.Access{
+			NamespaceAccesses: spec.GetAccess().GetNamespaceAccesses(),
+			AccountAccess: &identityv1.AccountAccess{
+				Role: newRole,
+			},
+		},
 	}
 
-	req := &authservice.UpdateUserRequest{UserId: userID, Spec: spec, ResourceVersion: userResp.GetUser().GetResourceVersion()}
-	resp, err := o.authServiceClient.UpdateUser(ctx, req)
+	req := &cloudservicev1.UpdateUserRequest{UserId: userID, Spec: newSpec, ResourceVersion: userResp.GetUser().GetResourceVersion()}
+	resp, err := o.client.UpdateUser(ctx, req)
 	if err != nil {
 		return nil, nil, fmt.Errorf("temporalcloud-connector: could not grant entitlement to user: %w", err)
 	}
 
-	retryDelay := time.Duration(resp.GetRequestStatus().GetCheckDuration().GetSeconds()) * time.Second
-	requestID := resp.GetRequestStatus().GetRequestId()
+	retryDelay := resp.GetAsyncOperation().GetCheckDuration().AsDuration()
+	requestID := resp.GetAsyncOperation().GetId()
 	l := ctxzap.Extract(ctx).With(
 		zap.String("request_id", requestID),
 		zap.String("principal_id", userID),
@@ -213,7 +195,7 @@ func (o *accountRoleBuilder) Grant(ctx context.Context, principal *v2.Resource, 
 	annos := annotations.New()
 	annos.Append(&v2.RequestId{RequestId: requestID})
 
-	g, err := createAccountRoleGrant(user, accountRole)
+	g, err := createAccountRoleGrant(user, accountRole, accountID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -222,6 +204,11 @@ func (o *accountRoleBuilder) Grant(ctx context.Context, principal *v2.Resource, 
 }
 
 func (o *accountRoleBuilder) Revoke(ctx context.Context, g *v2.Grant) (annotations.Annotations, error) {
+	accountID, err := o.client.GetAccountID(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	e := g.GetEntitlement()
 	principal := g.GetPrincipal()
 	entitlementID := e.GetId()
@@ -230,6 +217,11 @@ func (o *accountRoleBuilder) Revoke(ctx context.Context, g *v2.Grant) (annotatio
 	accountRole := e.GetResource()
 	accountRoleID := accountRole.GetId().GetResource()
 	accountRoleType := accountRole.GetId().GetResourceType()
+
+	ar := accountAccessRoleFromID(accountRoleID, accountID)
+	if slices.Contains(immutableAccountRoles, ar) {
+		return nil, fmt.Errorf("temporalcloud-connector: role %s is immutable and cannot be revoked", accountRoleDisplayName(ar))
+	}
 
 	userResp, err := o.client.GetUser(ctx, &cloudservicev1.GetUserRequest{UserId: userID})
 	if err != nil {
@@ -265,9 +257,8 @@ func (o *accountRoleBuilder) Revoke(ctx context.Context, g *v2.Grant) (annotatio
 	return annos, nil
 }
 
-func newAccountBuilder(client cloudservicev1.CloudServiceClient, authClient authservice.AuthServiceClient) *accountRoleBuilder {
+func newAccountBuilder(client *client.Client) *accountRoleBuilder {
 	return &accountRoleBuilder{
-		client:            client,
-		authServiceClient: authClient,
+		client: client,
 	}
 }
