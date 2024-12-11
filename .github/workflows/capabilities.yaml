@@ -24,6 +24,8 @@ jobs:
         run: go build -o connector ./cmd/baton-temporalcloud
 
       - name: Run and save output
+        env:
+          BATON_API_KEY: ${{ secrets.TEMPORAL_CLOUD_API_KEY }}
         run: ./connector capabilities > baton_capabilities.json
 
       - name: Commit changes
