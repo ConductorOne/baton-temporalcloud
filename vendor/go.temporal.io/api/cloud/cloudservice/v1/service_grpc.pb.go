@@ -38,8 +38,8 @@ import (
 
 // This is a compile-time assertion to ensure that this generated file
 // is compatible with the grpc package it is being compiled against.
-// Requires gRPC-Go v1.62.0 or later.
-const _ = grpc.SupportPackageIsVersion8
+// Requires gRPC-Go v1.64.0 or later.
+const _ = grpc.SupportPackageIsVersion9
 
 const (
 	CloudService_GetUsers_FullMethodName                    = "/temporal.api.cloud.cloudservice.v1.CloudService/GetUsers"
@@ -64,6 +64,11 @@ const (
 	CloudService_CreateApiKey_FullMethodName                = "/temporal.api.cloud.cloudservice.v1.CloudService/CreateApiKey"
 	CloudService_UpdateApiKey_FullMethodName                = "/temporal.api.cloud.cloudservice.v1.CloudService/UpdateApiKey"
 	CloudService_DeleteApiKey_FullMethodName                = "/temporal.api.cloud.cloudservice.v1.CloudService/DeleteApiKey"
+	CloudService_GetNexusEndpoints_FullMethodName           = "/temporal.api.cloud.cloudservice.v1.CloudService/GetNexusEndpoints"
+	CloudService_GetNexusEndpoint_FullMethodName            = "/temporal.api.cloud.cloudservice.v1.CloudService/GetNexusEndpoint"
+	CloudService_CreateNexusEndpoint_FullMethodName         = "/temporal.api.cloud.cloudservice.v1.CloudService/CreateNexusEndpoint"
+	CloudService_UpdateNexusEndpoint_FullMethodName         = "/temporal.api.cloud.cloudservice.v1.CloudService/UpdateNexusEndpoint"
+	CloudService_DeleteNexusEndpoint_FullMethodName         = "/temporal.api.cloud.cloudservice.v1.CloudService/DeleteNexusEndpoint"
 	CloudService_GetUserGroups_FullMethodName               = "/temporal.api.cloud.cloudservice.v1.CloudService/GetUserGroups"
 	CloudService_GetUserGroup_FullMethodName                = "/temporal.api.cloud.cloudservice.v1.CloudService/GetUserGroup"
 	CloudService_CreateUserGroup_FullMethodName             = "/temporal.api.cloud.cloudservice.v1.CloudService/CreateUserGroup"
@@ -75,6 +80,15 @@ const (
 	CloudService_GetServiceAccounts_FullMethodName          = "/temporal.api.cloud.cloudservice.v1.CloudService/GetServiceAccounts"
 	CloudService_UpdateServiceAccount_FullMethodName        = "/temporal.api.cloud.cloudservice.v1.CloudService/UpdateServiceAccount"
 	CloudService_DeleteServiceAccount_FullMethodName        = "/temporal.api.cloud.cloudservice.v1.CloudService/DeleteServiceAccount"
+	CloudService_GetUsage_FullMethodName                    = "/temporal.api.cloud.cloudservice.v1.CloudService/GetUsage"
+	CloudService_GetAccount_FullMethodName                  = "/temporal.api.cloud.cloudservice.v1.CloudService/GetAccount"
+	CloudService_UpdateAccount_FullMethodName               = "/temporal.api.cloud.cloudservice.v1.CloudService/UpdateAccount"
+	CloudService_CreateNamespaceExportSink_FullMethodName   = "/temporal.api.cloud.cloudservice.v1.CloudService/CreateNamespaceExportSink"
+	CloudService_GetNamespaceExportSink_FullMethodName      = "/temporal.api.cloud.cloudservice.v1.CloudService/GetNamespaceExportSink"
+	CloudService_GetNamespaceExportSinks_FullMethodName     = "/temporal.api.cloud.cloudservice.v1.CloudService/GetNamespaceExportSinks"
+	CloudService_UpdateNamespaceExportSink_FullMethodName   = "/temporal.api.cloud.cloudservice.v1.CloudService/UpdateNamespaceExportSink"
+	CloudService_DeleteNamespaceExportSink_FullMethodName   = "/temporal.api.cloud.cloudservice.v1.CloudService/DeleteNamespaceExportSink"
+	CloudService_ValidateNamespaceExportSink_FullMethodName = "/temporal.api.cloud.cloudservice.v1.CloudService/ValidateNamespaceExportSink"
 )
 
 // CloudServiceClient is the client API for CloudService service.
@@ -128,6 +142,16 @@ type CloudServiceClient interface {
 	UpdateApiKey(ctx context.Context, in *UpdateApiKeyRequest, opts ...grpc.CallOption) (*UpdateApiKeyResponse, error)
 	// Delete an API key
 	DeleteApiKey(ctx context.Context, in *DeleteApiKeyRequest, opts ...grpc.CallOption) (*DeleteApiKeyResponse, error)
+	// Gets nexus endpoints
+	GetNexusEndpoints(ctx context.Context, in *GetNexusEndpointsRequest, opts ...grpc.CallOption) (*GetNexusEndpointsResponse, error)
+	// Get a nexus endpoint
+	GetNexusEndpoint(ctx context.Context, in *GetNexusEndpointRequest, opts ...grpc.CallOption) (*GetNexusEndpointResponse, error)
+	// Create a nexus endpoint
+	CreateNexusEndpoint(ctx context.Context, in *CreateNexusEndpointRequest, opts ...grpc.CallOption) (*CreateNexusEndpointResponse, error)
+	// Update a nexus endpoint
+	UpdateNexusEndpoint(ctx context.Context, in *UpdateNexusEndpointRequest, opts ...grpc.CallOption) (*UpdateNexusEndpointResponse, error)
+	// Delete a nexus endpoint
+	DeleteNexusEndpoint(ctx context.Context, in *DeleteNexusEndpointRequest, opts ...grpc.CallOption) (*DeleteNexusEndpointResponse, error)
 	// Get all user groups
 	GetUserGroups(ctx context.Context, in *GetUserGroupsRequest, opts ...grpc.CallOption) (*GetUserGroupsResponse, error)
 	// Get a user group
@@ -150,6 +174,26 @@ type CloudServiceClient interface {
 	UpdateServiceAccount(ctx context.Context, in *UpdateServiceAccountRequest, opts ...grpc.CallOption) (*UpdateServiceAccountResponse, error)
 	// Delete a service account.
 	DeleteServiceAccount(ctx context.Context, in *DeleteServiceAccountRequest, opts ...grpc.CallOption) (*DeleteServiceAccountResponse, error)
+	// WARNING: Pre-Release Feature
+	// Get usage data across namespaces
+	GetUsage(ctx context.Context, in *GetUsageRequest, opts ...grpc.CallOption) (*GetUsageResponse, error)
+	// Get account information.
+	GetAccount(ctx context.Context, in *GetAccountRequest, opts ...grpc.CallOption) (*GetAccountResponse, error)
+	// Update account information.
+	UpdateAccount(ctx context.Context, in *UpdateAccountRequest, opts ...grpc.CallOption) (*UpdateAccountResponse, error)
+	// Create an export sink
+	CreateNamespaceExportSink(ctx context.Context, in *CreateNamespaceExportSinkRequest, opts ...grpc.CallOption) (*CreateNamespaceExportSinkResponse, error)
+	// Get an export sink
+	GetNamespaceExportSink(ctx context.Context, in *GetNamespaceExportSinkRequest, opts ...grpc.CallOption) (*GetNamespaceExportSinkResponse, error)
+	// Get export sinks
+	GetNamespaceExportSinks(ctx context.Context, in *GetNamespaceExportSinksRequest, opts ...grpc.CallOption) (*GetNamespaceExportSinksResponse, error)
+	// Update an export sink
+	UpdateNamespaceExportSink(ctx context.Context, in *UpdateNamespaceExportSinkRequest, opts ...grpc.CallOption) (*UpdateNamespaceExportSinkResponse, error)
+	// Delete an export sink
+	DeleteNamespaceExportSink(ctx context.Context, in *DeleteNamespaceExportSinkRequest, opts ...grpc.CallOption) (*DeleteNamespaceExportSinkResponse, error)
+	// Validates an export sink configuration by delivering an empty test file to the specified sink.
+	// This operation verifies that the sink is correctly configured, accessible, and ready for data export.
+	ValidateNamespaceExportSink(ctx context.Context, in *ValidateNamespaceExportSinkRequest, opts ...grpc.CallOption) (*ValidateNamespaceExportSinkResponse, error)
 }
 
 type cloudServiceClient struct {
@@ -380,6 +424,56 @@ func (c *cloudServiceClient) DeleteApiKey(ctx context.Context, in *DeleteApiKeyR
 	return out, nil
 }
 
+func (c *cloudServiceClient) GetNexusEndpoints(ctx context.Context, in *GetNexusEndpointsRequest, opts ...grpc.CallOption) (*GetNexusEndpointsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetNexusEndpointsResponse)
+	err := c.cc.Invoke(ctx, CloudService_GetNexusEndpoints_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudServiceClient) GetNexusEndpoint(ctx context.Context, in *GetNexusEndpointRequest, opts ...grpc.CallOption) (*GetNexusEndpointResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetNexusEndpointResponse)
+	err := c.cc.Invoke(ctx, CloudService_GetNexusEndpoint_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudServiceClient) CreateNexusEndpoint(ctx context.Context, in *CreateNexusEndpointRequest, opts ...grpc.CallOption) (*CreateNexusEndpointResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateNexusEndpointResponse)
+	err := c.cc.Invoke(ctx, CloudService_CreateNexusEndpoint_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudServiceClient) UpdateNexusEndpoint(ctx context.Context, in *UpdateNexusEndpointRequest, opts ...grpc.CallOption) (*UpdateNexusEndpointResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateNexusEndpointResponse)
+	err := c.cc.Invoke(ctx, CloudService_UpdateNexusEndpoint_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudServiceClient) DeleteNexusEndpoint(ctx context.Context, in *DeleteNexusEndpointRequest, opts ...grpc.CallOption) (*DeleteNexusEndpointResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteNexusEndpointResponse)
+	err := c.cc.Invoke(ctx, CloudService_DeleteNexusEndpoint_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *cloudServiceClient) GetUserGroups(ctx context.Context, in *GetUserGroupsRequest, opts ...grpc.CallOption) (*GetUserGroupsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetUserGroupsResponse)
@@ -490,9 +584,99 @@ func (c *cloudServiceClient) DeleteServiceAccount(ctx context.Context, in *Delet
 	return out, nil
 }
 
+func (c *cloudServiceClient) GetUsage(ctx context.Context, in *GetUsageRequest, opts ...grpc.CallOption) (*GetUsageResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetUsageResponse)
+	err := c.cc.Invoke(ctx, CloudService_GetUsage_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudServiceClient) GetAccount(ctx context.Context, in *GetAccountRequest, opts ...grpc.CallOption) (*GetAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAccountResponse)
+	err := c.cc.Invoke(ctx, CloudService_GetAccount_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudServiceClient) UpdateAccount(ctx context.Context, in *UpdateAccountRequest, opts ...grpc.CallOption) (*UpdateAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateAccountResponse)
+	err := c.cc.Invoke(ctx, CloudService_UpdateAccount_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudServiceClient) CreateNamespaceExportSink(ctx context.Context, in *CreateNamespaceExportSinkRequest, opts ...grpc.CallOption) (*CreateNamespaceExportSinkResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateNamespaceExportSinkResponse)
+	err := c.cc.Invoke(ctx, CloudService_CreateNamespaceExportSink_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudServiceClient) GetNamespaceExportSink(ctx context.Context, in *GetNamespaceExportSinkRequest, opts ...grpc.CallOption) (*GetNamespaceExportSinkResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetNamespaceExportSinkResponse)
+	err := c.cc.Invoke(ctx, CloudService_GetNamespaceExportSink_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudServiceClient) GetNamespaceExportSinks(ctx context.Context, in *GetNamespaceExportSinksRequest, opts ...grpc.CallOption) (*GetNamespaceExportSinksResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetNamespaceExportSinksResponse)
+	err := c.cc.Invoke(ctx, CloudService_GetNamespaceExportSinks_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudServiceClient) UpdateNamespaceExportSink(ctx context.Context, in *UpdateNamespaceExportSinkRequest, opts ...grpc.CallOption) (*UpdateNamespaceExportSinkResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateNamespaceExportSinkResponse)
+	err := c.cc.Invoke(ctx, CloudService_UpdateNamespaceExportSink_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudServiceClient) DeleteNamespaceExportSink(ctx context.Context, in *DeleteNamespaceExportSinkRequest, opts ...grpc.CallOption) (*DeleteNamespaceExportSinkResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteNamespaceExportSinkResponse)
+	err := c.cc.Invoke(ctx, CloudService_DeleteNamespaceExportSink_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cloudServiceClient) ValidateNamespaceExportSink(ctx context.Context, in *ValidateNamespaceExportSinkRequest, opts ...grpc.CallOption) (*ValidateNamespaceExportSinkResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ValidateNamespaceExportSinkResponse)
+	err := c.cc.Invoke(ctx, CloudService_ValidateNamespaceExportSink_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CloudServiceServer is the server API for CloudService service.
 // All implementations must embed UnimplementedCloudServiceServer
-// for forward compatibility
+// for forward compatibility.
 //
 // WARNING: This service is currently experimental and may change in
 // incompatible ways.
@@ -541,6 +725,16 @@ type CloudServiceServer interface {
 	UpdateApiKey(context.Context, *UpdateApiKeyRequest) (*UpdateApiKeyResponse, error)
 	// Delete an API key
 	DeleteApiKey(context.Context, *DeleteApiKeyRequest) (*DeleteApiKeyResponse, error)
+	// Gets nexus endpoints
+	GetNexusEndpoints(context.Context, *GetNexusEndpointsRequest) (*GetNexusEndpointsResponse, error)
+	// Get a nexus endpoint
+	GetNexusEndpoint(context.Context, *GetNexusEndpointRequest) (*GetNexusEndpointResponse, error)
+	// Create a nexus endpoint
+	CreateNexusEndpoint(context.Context, *CreateNexusEndpointRequest) (*CreateNexusEndpointResponse, error)
+	// Update a nexus endpoint
+	UpdateNexusEndpoint(context.Context, *UpdateNexusEndpointRequest) (*UpdateNexusEndpointResponse, error)
+	// Delete a nexus endpoint
+	DeleteNexusEndpoint(context.Context, *DeleteNexusEndpointRequest) (*DeleteNexusEndpointResponse, error)
 	// Get all user groups
 	GetUserGroups(context.Context, *GetUserGroupsRequest) (*GetUserGroupsResponse, error)
 	// Get a user group
@@ -563,12 +757,35 @@ type CloudServiceServer interface {
 	UpdateServiceAccount(context.Context, *UpdateServiceAccountRequest) (*UpdateServiceAccountResponse, error)
 	// Delete a service account.
 	DeleteServiceAccount(context.Context, *DeleteServiceAccountRequest) (*DeleteServiceAccountResponse, error)
+	// WARNING: Pre-Release Feature
+	// Get usage data across namespaces
+	GetUsage(context.Context, *GetUsageRequest) (*GetUsageResponse, error)
+	// Get account information.
+	GetAccount(context.Context, *GetAccountRequest) (*GetAccountResponse, error)
+	// Update account information.
+	UpdateAccount(context.Context, *UpdateAccountRequest) (*UpdateAccountResponse, error)
+	// Create an export sink
+	CreateNamespaceExportSink(context.Context, *CreateNamespaceExportSinkRequest) (*CreateNamespaceExportSinkResponse, error)
+	// Get an export sink
+	GetNamespaceExportSink(context.Context, *GetNamespaceExportSinkRequest) (*GetNamespaceExportSinkResponse, error)
+	// Get export sinks
+	GetNamespaceExportSinks(context.Context, *GetNamespaceExportSinksRequest) (*GetNamespaceExportSinksResponse, error)
+	// Update an export sink
+	UpdateNamespaceExportSink(context.Context, *UpdateNamespaceExportSinkRequest) (*UpdateNamespaceExportSinkResponse, error)
+	// Delete an export sink
+	DeleteNamespaceExportSink(context.Context, *DeleteNamespaceExportSinkRequest) (*DeleteNamespaceExportSinkResponse, error)
+	// Validates an export sink configuration by delivering an empty test file to the specified sink.
+	// This operation verifies that the sink is correctly configured, accessible, and ready for data export.
+	ValidateNamespaceExportSink(context.Context, *ValidateNamespaceExportSinkRequest) (*ValidateNamespaceExportSinkResponse, error)
 	mustEmbedUnimplementedCloudServiceServer()
 }
 
-// UnimplementedCloudServiceServer must be embedded to have forward compatible implementations.
-type UnimplementedCloudServiceServer struct {
-}
+// UnimplementedCloudServiceServer must be embedded to have
+// forward compatible implementations.
+//
+// NOTE: this should be embedded by value instead of pointer to avoid a nil
+// pointer dereference when methods are called.
+type UnimplementedCloudServiceServer struct{}
 
 func (UnimplementedCloudServiceServer) GetUsers(context.Context, *GetUsersRequest) (*GetUsersResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetUsers not implemented")
@@ -636,6 +853,21 @@ func (UnimplementedCloudServiceServer) UpdateApiKey(context.Context, *UpdateApiK
 func (UnimplementedCloudServiceServer) DeleteApiKey(context.Context, *DeleteApiKeyRequest) (*DeleteApiKeyResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteApiKey not implemented")
 }
+func (UnimplementedCloudServiceServer) GetNexusEndpoints(context.Context, *GetNexusEndpointsRequest) (*GetNexusEndpointsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetNexusEndpoints not implemented")
+}
+func (UnimplementedCloudServiceServer) GetNexusEndpoint(context.Context, *GetNexusEndpointRequest) (*GetNexusEndpointResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetNexusEndpoint not implemented")
+}
+func (UnimplementedCloudServiceServer) CreateNexusEndpoint(context.Context, *CreateNexusEndpointRequest) (*CreateNexusEndpointResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateNexusEndpoint not implemented")
+}
+func (UnimplementedCloudServiceServer) UpdateNexusEndpoint(context.Context, *UpdateNexusEndpointRequest) (*UpdateNexusEndpointResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateNexusEndpoint not implemented")
+}
+func (UnimplementedCloudServiceServer) DeleteNexusEndpoint(context.Context, *DeleteNexusEndpointRequest) (*DeleteNexusEndpointResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeleteNexusEndpoint not implemented")
+}
 func (UnimplementedCloudServiceServer) GetUserGroups(context.Context, *GetUserGroupsRequest) (*GetUserGroupsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetUserGroups not implemented")
 }
@@ -669,7 +901,35 @@ func (UnimplementedCloudServiceServer) UpdateServiceAccount(context.Context, *Up
 func (UnimplementedCloudServiceServer) DeleteServiceAccount(context.Context, *DeleteServiceAccountRequest) (*DeleteServiceAccountResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteServiceAccount not implemented")
 }
+func (UnimplementedCloudServiceServer) GetUsage(context.Context, *GetUsageRequest) (*GetUsageResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetUsage not implemented")
+}
+func (UnimplementedCloudServiceServer) GetAccount(context.Context, *GetAccountRequest) (*GetAccountResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetAccount not implemented")
+}
+func (UnimplementedCloudServiceServer) UpdateAccount(context.Context, *UpdateAccountRequest) (*UpdateAccountResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateAccount not implemented")
+}
+func (UnimplementedCloudServiceServer) CreateNamespaceExportSink(context.Context, *CreateNamespaceExportSinkRequest) (*CreateNamespaceExportSinkResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateNamespaceExportSink not implemented")
+}
+func (UnimplementedCloudServiceServer) GetNamespaceExportSink(context.Context, *GetNamespaceExportSinkRequest) (*GetNamespaceExportSinkResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetNamespaceExportSink not implemented")
+}
+func (UnimplementedCloudServiceServer) GetNamespaceExportSinks(context.Context, *GetNamespaceExportSinksRequest) (*GetNamespaceExportSinksResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetNamespaceExportSinks not implemented")
+}
+func (UnimplementedCloudServiceServer) UpdateNamespaceExportSink(context.Context, *UpdateNamespaceExportSinkRequest) (*UpdateNamespaceExportSinkResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UpdateNamespaceExportSink not implemented")
+}
+func (UnimplementedCloudServiceServer) DeleteNamespaceExportSink(context.Context, *DeleteNamespaceExportSinkRequest) (*DeleteNamespaceExportSinkResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeleteNamespaceExportSink not implemented")
+}
+func (UnimplementedCloudServiceServer) ValidateNamespaceExportSink(context.Context, *ValidateNamespaceExportSinkRequest) (*ValidateNamespaceExportSinkResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ValidateNamespaceExportSink not implemented")
+}
 func (UnimplementedCloudServiceServer) mustEmbedUnimplementedCloudServiceServer() {}
+func (UnimplementedCloudServiceServer) testEmbeddedByValue()                      {}
 
 // UnsafeCloudServiceServer may be embedded to opt out of forward compatibility for this service.
 // Use of this interface is not recommended, as added methods to CloudServiceServer will
@@ -679,6 +939,13 @@ type UnsafeCloudServiceServer interface {
 }
 
 func RegisterCloudServiceServer(s grpc.ServiceRegistrar, srv CloudServiceServer) {
+	// If the following call pancis, it indicates UnimplementedCloudServiceServer was
+	// embedded by pointer and is nil.  This will cause panics if an
+	// unimplemented method is ever invoked, so we test this at initialization
+	// time to prevent it from happening at runtime later due to I/O.
+	if t, ok := srv.(interface{ testEmbeddedByValue() }); ok {
+		t.testEmbeddedByValue()
+	}
 	s.RegisterService(&CloudService_ServiceDesc, srv)
 }
 
@@ -1078,6 +1345,96 @@ func _CloudService_DeleteApiKey_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CloudService_GetNexusEndpoints_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetNexusEndpointsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudServiceServer).GetNexusEndpoints(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudService_GetNexusEndpoints_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudServiceServer).GetNexusEndpoints(ctx, req.(*GetNexusEndpointsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudService_GetNexusEndpoint_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetNexusEndpointRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudServiceServer).GetNexusEndpoint(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudService_GetNexusEndpoint_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudServiceServer).GetNexusEndpoint(ctx, req.(*GetNexusEndpointRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudService_CreateNexusEndpoint_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateNexusEndpointRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudServiceServer).CreateNexusEndpoint(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudService_CreateNexusEndpoint_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudServiceServer).CreateNexusEndpoint(ctx, req.(*CreateNexusEndpointRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudService_UpdateNexusEndpoint_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateNexusEndpointRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudServiceServer).UpdateNexusEndpoint(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudService_UpdateNexusEndpoint_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudServiceServer).UpdateNexusEndpoint(ctx, req.(*UpdateNexusEndpointRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudService_DeleteNexusEndpoint_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteNexusEndpointRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudServiceServer).DeleteNexusEndpoint(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudService_DeleteNexusEndpoint_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudServiceServer).DeleteNexusEndpoint(ctx, req.(*DeleteNexusEndpointRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _CloudService_GetUserGroups_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetUserGroupsRequest)
 	if err := dec(in); err != nil {
@@ -1276,6 +1633,168 @@ func _CloudService_DeleteServiceAccount_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CloudService_GetUsage_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetUsageRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudServiceServer).GetUsage(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudService_GetUsage_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudServiceServer).GetUsage(ctx, req.(*GetUsageRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudService_GetAccount_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetAccountRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudServiceServer).GetAccount(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudService_GetAccount_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudServiceServer).GetAccount(ctx, req.(*GetAccountRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudService_UpdateAccount_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateAccountRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudServiceServer).UpdateAccount(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudService_UpdateAccount_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudServiceServer).UpdateAccount(ctx, req.(*UpdateAccountRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudService_CreateNamespaceExportSink_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateNamespaceExportSinkRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudServiceServer).CreateNamespaceExportSink(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudService_CreateNamespaceExportSink_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudServiceServer).CreateNamespaceExportSink(ctx, req.(*CreateNamespaceExportSinkRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudService_GetNamespaceExportSink_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetNamespaceExportSinkRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudServiceServer).GetNamespaceExportSink(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudService_GetNamespaceExportSink_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudServiceServer).GetNamespaceExportSink(ctx, req.(*GetNamespaceExportSinkRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudService_GetNamespaceExportSinks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetNamespaceExportSinksRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudServiceServer).GetNamespaceExportSinks(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudService_GetNamespaceExportSinks_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudServiceServer).GetNamespaceExportSinks(ctx, req.(*GetNamespaceExportSinksRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudService_UpdateNamespaceExportSink_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateNamespaceExportSinkRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudServiceServer).UpdateNamespaceExportSink(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudService_UpdateNamespaceExportSink_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudServiceServer).UpdateNamespaceExportSink(ctx, req.(*UpdateNamespaceExportSinkRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudService_DeleteNamespaceExportSink_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteNamespaceExportSinkRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudServiceServer).DeleteNamespaceExportSink(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudService_DeleteNamespaceExportSink_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudServiceServer).DeleteNamespaceExportSink(ctx, req.(*DeleteNamespaceExportSinkRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CloudService_ValidateNamespaceExportSink_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ValidateNamespaceExportSinkRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CloudServiceServer).ValidateNamespaceExportSink(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CloudService_ValidateNamespaceExportSink_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CloudServiceServer).ValidateNamespaceExportSink(ctx, req.(*ValidateNamespaceExportSinkRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // CloudService_ServiceDesc is the grpc.ServiceDesc for CloudService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1372,6 +1891,26 @@ var CloudService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _CloudService_DeleteApiKey_Handler,
 		},
 		{
+			MethodName: "GetNexusEndpoints",
+			Handler:    _CloudService_GetNexusEndpoints_Handler,
+		},
+		{
+			MethodName: "GetNexusEndpoint",
+			Handler:    _CloudService_GetNexusEndpoint_Handler,
+		},
+		{
+			MethodName: "CreateNexusEndpoint",
+			Handler:    _CloudService_CreateNexusEndpoint_Handler,
+		},
+		{
+			MethodName: "UpdateNexusEndpoint",
+			Handler:    _CloudService_UpdateNexusEndpoint_Handler,
+		},
+		{
+			MethodName: "DeleteNexusEndpoint",
+			Handler:    _CloudService_DeleteNexusEndpoint_Handler,
+		},
+		{
 			MethodName: "GetUserGroups",
 			Handler:    _CloudService_GetUserGroups_Handler,
 		},
@@ -1414,6 +1953,42 @@ var CloudService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteServiceAccount",
 			Handler:    _CloudService_DeleteServiceAccount_Handler,
+		},
+		{
+			MethodName: "GetUsage",
+			Handler:    _CloudService_GetUsage_Handler,
+		},
+		{
+			MethodName: "GetAccount",
+			Handler:    _CloudService_GetAccount_Handler,
+		},
+		{
+			MethodName: "UpdateAccount",
+			Handler:    _CloudService_UpdateAccount_Handler,
+		},
+		{
+			MethodName: "CreateNamespaceExportSink",
+			Handler:    _CloudService_CreateNamespaceExportSink_Handler,
+		},
+		{
+			MethodName: "GetNamespaceExportSink",
+			Handler:    _CloudService_GetNamespaceExportSink_Handler,
+		},
+		{
+			MethodName: "GetNamespaceExportSinks",
+			Handler:    _CloudService_GetNamespaceExportSinks_Handler,
+		},
+		{
+			MethodName: "UpdateNamespaceExportSink",
+			Handler:    _CloudService_UpdateNamespaceExportSink_Handler,
+		},
+		{
+			MethodName: "DeleteNamespaceExportSink",
+			Handler:    _CloudService_DeleteNamespaceExportSink_Handler,
+		},
+		{
+			MethodName: "ValidateNamespaceExportSink",
+			Handler:    _CloudService_ValidateNamespaceExportSink_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

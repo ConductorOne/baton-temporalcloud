@@ -3,7 +3,6 @@ package connector
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
@@ -11,29 +10,19 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
-	"github.com/temporalio/tcld/protogen/api/auth/v1"
-	"go.uber.org/zap"
-	"golang.org/x/text/cases"
-	"golang.org/x/text/language"
-
 	cloudservicev1 "go.temporal.io/api/cloud/cloudservice/v1"
 	identityv1 "go.temporal.io/api/cloud/identity/v1"
+	"go.uber.org/zap"
 )
 
 const (
 	NamespacePermissionAssignmentMaxDuration = 10 * time.Minute
 )
 
-const (
-	namespacePermissionReadOnly = "read"
-	namespacePermissionWrite    = "write"
-	namespacePermissionAdmin    = "admin"
-)
-
-var namespaceAccessLevels = []string{
-	namespacePermissionReadOnly,
-	namespacePermissionWrite,
-	namespacePermissionAdmin,
+var namespaceAccessLevels = []identityv1.NamespaceAccess_Permission{
+	identityv1.NamespaceAccess_PERMISSION_ADMIN,
+	identityv1.NamespaceAccess_PERMISSION_WRITE,
+	identityv1.NamespaceAccess_PERMISSION_READ,
 }
 
 type namespaceBuilder struct {
@@ -83,12 +72,12 @@ func (o *namespaceBuilder) Entitlements(_ context.Context, resource *v2.Resource
 	rv := make([]*v2.Entitlement, 0, len(namespaceAccessLevels))
 	for _, level := range namespaceAccessLevels {
 		annos := &v2.V1Identifier{
-			Id: namespaceEntitlementID(resource.GetId().GetResource(), level),
+			Id: namespaceEntitlementID(resource.GetId().GetResource(), namespacePermissionName(level)),
 		}
 		e := entitlement.NewPermissionEntitlement(
-			resource, level,
-			entitlement.WithDisplayName(fmt.Sprintf("Namespace %s %s", resource.DisplayName, cases.Title(language.English).String(level))),
-			entitlement.WithDescription(fmt.Sprintf("Access to %s namespace in Temporal Cloud", resource.DisplayName)),
+			resource, namespacePermissionName(level),
+			entitlement.WithDisplayName(namespacePermissionDisplayName(level, resource.GetDisplayName())),
+			entitlement.WithDescription(fmt.Sprintf("Access to %s namespace in Temporal Cloud", resource.GetDisplayName())),
 			entitlement.WithAnnotation(annos),
 			entitlement.WithGrantableTo(userResourceType),
 		)
@@ -139,7 +128,7 @@ func (o *namespaceBuilder) Grants(ctx context.Context, resource *v2.Resource, pT
 }
 
 func (o *namespaceBuilder) Grant(ctx context.Context, principal *v2.Resource, e *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
-	namespaceRole := e.GetSlug()
+	nsRole := e.GetSlug()
 	entitlementID := e.GetId()
 	userID := principal.GetId().GetResource()
 	userType := principal.GetId().GetResourceType()
@@ -147,17 +136,14 @@ func (o *namespaceBuilder) Grant(ctx context.Context, principal *v2.Resource, e 
 	namespaceID := namespace.GetId().GetResource()
 	namespaceType := namespace.GetId().GetResourceType()
 
-	switch r := strings.ToLower(namespaceRole); r {
-	case strings.ToLower(auth.NAMESPACE_ACTION_GROUP_ADMIN.String()):
-	case strings.ToLower(auth.NAMESPACE_ACTION_GROUP_WRITE.String()):
-	case strings.ToLower(auth.NAMESPACE_ACTION_GROUP_READ.String()):
-	default:
-		return nil, nil, fmt.Errorf("unrecognized namespace entitlement ID: %s", namespaceRole)
+	namespaceRole := namespaceAccessPermissionFromString(nsRole)
+	if namespaceRole == identityv1.NamespaceAccess_PERMISSION_UNSPECIFIED {
+		return nil, nil, fmt.Errorf("temporalcloud-connector: invalid namespace permission %s", nsRole)
 	}
 
 	userResp, err := o.client.GetUser(ctx, &cloudservicev1.GetUserRequest{UserId: userID})
 	if err != nil {
-		return nil, nil, fmt.Errorf("couldn't retrieve user: %w", err)
+		return nil, nil, fmt.Errorf("temporalcloud-connector: couldn't retrieve user: %w", err)
 	}
 	user := userResp.GetUser()
 	spec := user.GetSpec()
@@ -168,6 +154,11 @@ func (o *namespaceBuilder) Grant(ctx context.Context, principal *v2.Resource, e 
 			namespaceID: perm,
 		}
 	} else {
+		existing, ok := ns[namespaceID]
+		if ok && existing.GetPermission() == namespaceRole {
+			annos := annotations.New(&v2.GrantAlreadyExists{})
+			return nil, annos, nil
+		}
 		ns[namespaceID] = perm
 	}
 	spec.Access.NamespaceAccesses = ns
@@ -222,7 +213,8 @@ func (o *namespaceBuilder) Revoke(ctx context.Context, g *v2.Grant) (annotations
 	spec := user.GetSpec()
 	_, ok := spec.GetAccess().GetNamespaceAccesses()[namespaceID]
 	if !ok {
-		return nil, fmt.Errorf("temporalcloud-connector: grant does not exist for user")
+		annos := annotations.New(&v2.GrantAlreadyRevoked{})
+		return annos, fmt.Errorf("temporalcloud-connector: grant does not exist for user")
 	}
 
 	delete(spec.Access.NamespaceAccesses, namespaceID)

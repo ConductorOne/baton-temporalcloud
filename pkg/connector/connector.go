@@ -7,26 +7,22 @@ import (
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
-	"github.com/temporalio/tcld/protogen/api/authservice/v1"
-
-	cloudservicev1 "go.temporal.io/api/cloud/cloudservice/v1"
 
 	"github.com/conductorone/baton-temporalcloud/pkg/client"
 )
 
 type Connector struct {
-	cloudServiceClient cloudservicev1.CloudServiceClient
-	authServiceClient  authservice.AuthServiceClient
-}
+	cloudServiceClient *client.Client
 
-const tmprlCloudAPIAddr = "saas-api.tmprl.cloud:443"
+	accountID string
+}
 
 // ResourceSyncers returns a ResourceSyncer for each resource type that should be synced from the upstream service.
 func (d *Connector) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncer {
 	return []connectorbuilder.ResourceSyncer{
 		newUserBuilder(d.cloudServiceClient),
 		newNamespaceBuilder(d.cloudServiceClient),
-		newAccountBuilder(d.cloudServiceClient, d.authServiceClient),
+		newAccountBuilder(d.cloudServiceClient),
 	}
 }
 
@@ -47,21 +43,27 @@ func (d *Connector) Metadata(ctx context.Context) (*v2.ConnectorMetadata, error)
 // Validate is called to ensure that the connector is properly configured. It should exercise any API credentials
 // to be sure that they are valid.
 func (d *Connector) Validate(ctx context.Context) (annotations.Annotations, error) {
+	acctId, err := d.cloudServiceClient.GetAccountID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	d.accountID = acctId
 	return nil, nil
 }
 
 // New returns a new instance of the connector.
 func New(ctx context.Context, apiKey string, allowInsecure bool) (*Connector, error) {
-	conn, err := client.NewConnectionWithAPIKey(tmprlCloudAPIAddr, allowInsecure, apiKey)
+	var clientOpts []client.Opt
+	if allowInsecure {
+		clientOpts = append(clientOpts, client.AllowInsecure())
+	}
+
+	c, err := client.New(apiKey, clientOpts...)
 	if err != nil {
 		return nil, err
 	}
 
-	c := cloudservicev1.NewCloudServiceClient(conn)
-	authClient := authservice.NewAuthServiceClient(conn)
-
 	return &Connector{
 		cloudServiceClient: c,
-		authServiceClient:  authClient,
 	}, nil
 }

@@ -13,7 +13,7 @@ runs:
       with:
         repository: temporalio/tcld
         path: tcld
-        ref: refs/tags/v0.20.0
+        ref: refs/tags/v0.34.0
     - name: Build tcld
       working-directory: tcld
       shell: bash

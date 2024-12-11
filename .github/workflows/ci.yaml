@@ -40,6 +40,8 @@ jobs:
         with:
           test-results: test.json
 
+# TODO use Terraform for the setup/teardown
+
   setup-temporal-cloud:
     runs-on: ubuntu-latest
     env:
@@ -54,7 +56,29 @@ jobs:
         uses: ./.github/actions/install-tcld
       - name: Create test namespace
         run: |
-          tcld gen ca --org c1 -d 30d --ca-cert ca.pem --ca-key key.pem && tcld namespace create --ca-certificate-file=ca.pem --namespace=${{ env.TEST_NAMESPACE_NAME }} --region="us-west-2"
+          if ! tcld gen ca --org c1 -d 30d --ca-cert ca.pem --ca-key key.pem; then
+            exit 1
+          fi
+          if ! request_id=$(tcld namespace create --ca-certificate-file=ca.pem --namespace=${{ env.TEST_NAMESPACE_NAME }} --region="us-west-2" | jq --exit-status '.requestStatus.requestId' | tr -d '"'); then
+            exit 1
+          fi
+          while true; do
+            if ! resp=$(tcld request get --request-id=$request_id | jq --exit-status '.requestStatus'); then
+              exit 1
+            fi
+            if ! request_state=$(echo $resp | jq --exit-status '.state' | tr -d '"'); then
+              exit 1
+            fi
+            if ! failure_reason=$(echo $resp | jq --exit-status '.failureReason' | tr -d '"'); then
+              exit 1
+            fi
+            if [[ "$failure_reason" != "" ]]; then
+              exit 1
+            fi
+            if [[ "$request_state" == "Fulfilled" ]]; then
+              break
+            fi
+          done
       - name: Create test user
         run: |
           if ! request_id=$(tcld user invite --account-role="Read" --user-email "ci-test@${{ secrets.TEST_EMAIL_DOMAIN}}" | jq --exit-status '.requestId' | tr -d '"'); then
@@ -89,6 +113,7 @@ jobs:
     env:
       BATON_API_KEY: ${{ secrets.TEMPORAL_CLOUD_API_KEY }}
       CONNECTOR_GRANT: 'namespace:ci-test.iv3js:read:user'
+      CONNECTOR_IMMUTABLE_ENTITLEMENT: 'account-role:iv3js-owner:member'
       CONNECTOR_ENTITLEMENT: 'namespace:ci-test.iv3js:read'
       CONNECTOR_PRINCIPAL_ID: ${{ needs.setup-temporal-cloud.outputs.user-id }}
       CONNECTOR_PRINCIPAL_TYPE: 'user'
@@ -114,6 +139,13 @@ jobs:
         run: ./baton-temporalcloud && ./baton-temporalcloud --revoke-grant="${{ env.CONNECTOR_GRANT }}:${{ env.CONNECTOR_PRINCIPAL_ID }}"
       - name: Check grant was revoked
         run: ./baton-temporalcloud && baton grants --entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --output-format=json | jq --exit-status "if .grants then .grants[]?.principal.id.resource != \"${{ env.CONNECTOR_PRINCIPAL_ID }}\" else . end"
+      - name: Attempt to grant immutable grant
+        # CLI will return a non-zero code here, but we want to continue anyway
+        run: |
+          ./baton-temporalcloud && (./baton-temporalcloud --grant-entitlement="${{ env.CONNECTOR_IMMUTABLE_ENTITLEMENT }}" --grant-principal="${{ env.CONNECTOR_PRINCIPAL_ID }}" --grant-principal-type="${{ env.CONNECTOR_PRINCIPAL_TYPE }}" || true)
+      - name: Check immutable grant was not granted
+        run: |
+          ./baton-temporalcloud && baton grants --entitlement="${{ env.CONNECTOR_IMMUTABLE_ENTITLEMENT }}" --output-format=json | jq --exit-status "if .grants then .grants[]?.principal.id.resource != \"${{ env.CONNECTOR_PRINCIPAL_ID }}\" else . end"
 
   teardown-temporal-cloud:
     runs-on: ubuntu-latest
