@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
@@ -128,13 +129,19 @@ func (o *namespaceBuilder) Grants(ctx context.Context, resource *v2.Resource, pT
 }
 
 func (o *namespaceBuilder) Grant(ctx context.Context, principal *v2.Resource, e *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
-	nsRole := e.GetSlug()
 	entitlementID := e.GetId()
 	userID := principal.GetId().GetResource()
 	userType := principal.GetId().GetResourceType()
 	namespace := e.GetResource()
 	namespaceID := namespace.GetId().GetResource()
 	namespaceType := namespace.GetId().GetResourceType()
+
+	enIDParts := strings.Split(entitlementID, ":")
+	if len(enIDParts) != 3 {
+		return nil, nil, fmt.Errorf("temporalcloud-connector: invalid entitlement ID %s", entitlementID)
+	}
+
+	nsRole := enIDParts[2]
 
 	namespaceRole := namespaceAccessPermissionFromString(nsRole)
 	if namespaceRole == identityv1.NamespaceAccess_PERMISSION_UNSPECIFIED {
