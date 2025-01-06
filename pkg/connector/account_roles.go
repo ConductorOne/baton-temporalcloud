@@ -147,6 +147,12 @@ func (o *accountRoleBuilder) Grant(ctx context.Context, principal *v2.Resource, 
 		return nil, nil, fmt.Errorf("temporalcloud-connnector: couldn't retrieve user: %w", err)
 	}
 
+	currRole := userResp.GetUser().GetSpec().GetAccess().GetAccountAccess().GetRole()
+	if slices.Contains(immutableAccountRoles, currRole) {
+		zap.L().Info("temporalcloud-connector: user has immutable role, skipping grant", zap.String("user_id", userID))
+		return nil, nil, nil
+	}
+
 	newRole := accountAccessRoleFromID(accountRoleID, accountID)
 	if newRole == identityv1.AccountAccess_ROLE_UNSPECIFIED {
 		return nil, nil, fmt.Errorf("temporalcloud-connector: invalid account role %s", strings.TrimPrefix(accountRoleID, accountID+"-"))
