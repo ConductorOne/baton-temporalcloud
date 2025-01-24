@@ -40,5 +40,6 @@
   "connectorCapabilities": [
     "CAPABILITY_PROVISION",
     "CAPABILITY_SYNC"
-  ]
+  ],
+  "credentialDetails": {}
 }
