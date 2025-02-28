@@ -1,13 +1,15 @@
 module github.com/conductorone/baton-temporalcloud
 
-go 1.22
+go 1.23
 
-toolchain go1.22.1
+toolchain go1.23.6
 
 require (
 	github.com/conductorone/baton-sdk v0.2.61
+	github.com/ennyjfrick/ruleguard-logfatal v0.0.1
 	github.com/fatih/camelcase v1.0.0
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
+	github.com/quasilyte/go-ruleguard/dsl v0.3.22
 	github.com/spf13/viper v1.19.0
 	github.com/stretchr/testify v1.10.0
 	go.temporal.io/api v1.43.0
@@ -90,7 +92,7 @@ require (
 	golang.org/x/exp v0.0.0-20240719175910-8a7402abbf56 // indirect
 	golang.org/x/net v0.28.0 // indirect
 	golang.org/x/oauth2 v0.22.0 // indirect
-	golang.org/x/sync v0.10.0 // indirect
+	golang.org/x/sync v0.11.0 // indirect
 	golang.org/x/sys v0.24.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20240827150818-7e3bb234dfed // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240827150818-7e3bb234dfed // indirect

@@ -3,11 +3,15 @@ linters-settings:
     default-signifies-exhaustive: true
 
   gocritic:
+    enabled-checks:
+      - ruleguard
     # The list of supported checkers can be find in https://go-critic.github.io/overview.
     settings:
       underef:
         # Whether to skip (*x).method() calls where x is a pointer receiver.
         skipRecvDeref: false
+      ruleguard:
+        rules: "${configDir}/tools/rules.go"
 
   govet:
     enable-all: true
@@ -94,6 +98,7 @@ linters:
     - unconvert # Remove unnecessary type conversions
     - usestdlibvars # detect the possibility to use variables/constants from the Go standard library
     - whitespace # Tool for detection of leading and trailing whitespace
+
 
 issues:
   max-same-issues: 50
