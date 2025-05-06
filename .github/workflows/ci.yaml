@@ -130,6 +130,9 @@ jobs:
         run: ./baton-temporalcloud
       - name: Install baton
         run: ./scripts/get-baton.sh && mv baton /usr/local/bin
+      - name: list grants
+        run: |
+          ./baton-temporalcloud && baton grants
       - name: Grant entitlement
         run: ./baton-temporalcloud && ./baton-temporalcloud --grant-entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --grant-principal="${{ env.CONNECTOR_PRINCIPAL_ID }}" --grant-principal-type="${{ env.CONNECTOR_PRINCIPAL_TYPE }}"
       - name: list grants
