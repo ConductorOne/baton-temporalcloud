@@ -2,8 +2,6 @@ module github.com/conductorone/baton-temporalcloud
 
 go 1.24
 
-toolchain go1.24.2
-
 require (
 	github.com/conductorone/baton-sdk v0.2.99
 	github.com/ennyjfrick/ruleguard-logfatal v0.0.1
