@@ -36,6 +36,8 @@ func (tt TaskType) String() string {
 		return "list_resource_types"
 	case ListResourcesType:
 		return "list_resources"
+	case GetResourceType:
+		return "get_resource"
 	case ListEntitlementsType:
 		return "list_entitlements"
 	case ListGrantsType:
@@ -50,6 +52,14 @@ func (tt TaskType) String() string {
 		return "bulk_create_tickets"
 	case BulkGetTicketsType:
 		return "bulk_get_tickets"
+	case ActionListSchemasType:
+		return "list_action_schemas"
+	case ActionGetSchemaType:
+		return "get_action_schema"
+	case ActionInvokeType:
+		return "invoke_action"
+	case ActionStatusType:
+		return "action_status"
 	default:
 		return "unknown"
 	}
@@ -73,6 +83,7 @@ const (
 	GetTicketSchemaType
 	ListResourceTypesType
 	ListResourcesType
+	GetResourceType
 	ListEntitlementsType
 	ListGrantsType
 	GetMetadataType
@@ -80,4 +91,8 @@ const (
 	StartDebugging
 	BulkCreateTicketsType
 	BulkGetTicketsType
+	ActionListSchemasType
+	ActionGetSchemaType
+	ActionInvokeType
+	ActionStatusType
 )

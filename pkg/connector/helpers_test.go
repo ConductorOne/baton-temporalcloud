@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	identityv1 "go.temporal.io/api/cloud/identity/v1"
+	identityv1 "go.temporal.io/cloud-sdk/api/identity/v1"
 )
 
 var testAccountID = "a1b23"

@@ -11,8 +11,8 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
-	cloudservicev1 "go.temporal.io/api/cloud/cloudservice/v1"
-	identityv1 "go.temporal.io/api/cloud/identity/v1"
+	cloudservicev1 "go.temporal.io/cloud-sdk/api/cloudservice/v1"
+	identityv1 "go.temporal.io/cloud-sdk/api/identity/v1"
 	"go.uber.org/zap"
 )
 

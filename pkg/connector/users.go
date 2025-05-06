@@ -7,7 +7,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 
-	cloudservicev1 "go.temporal.io/api/cloud/cloudservice/v1"
+	cloudservicev1 "go.temporal.io/cloud-sdk/api/cloudservice/v1"
 )
 
 type userBuilder struct {
