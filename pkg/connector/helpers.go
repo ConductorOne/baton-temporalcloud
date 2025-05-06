@@ -235,13 +235,28 @@ func getAccountRoleID(in identityv1.AccountAccess_Role, accountID string) string
 }
 
 func accountRoleDisplayName(in identityv1.AccountAccess_Role) string {
-	trimmed := strings.TrimPrefix(in.String(), "ROLE_")
-	split := camelcase.Split(trimmed)
-	return fmt.Sprintf("Account %s", cases.Title(language.English).String(strings.Join(split, " ")))
+	hr := humanReadableEnum("ROLE", in.String())
+	return fmt.Sprintf("Account %s", hr)
 }
 
 func namespacePermissionDisplayName(in identityv1.NamespaceAccess_Permission, ns string) string {
-	trimmed := strings.TrimPrefix(in.String(), "PERMISSION_")
-	split := camelcase.Split(trimmed)
-	return fmt.Sprintf("Namespace %s %s", ns, cases.Title(language.English).String(strings.Join(split, " ")))
+	hr := humanReadableEnum("PERMISSION", in.String())
+	return fmt.Sprintf("Namespace %s %s", ns, hr)
+}
+
+func humanReadableEnum(prefix string, s string) string {
+	// APP_USER_TYPE_SERVICE_ACCOUNT -> app_user_type_service_account
+	s = strings.TrimSpace(s)
+	s = strings.ToLower(s)
+	prefix = strings.ToLower(prefix)
+
+	// app_user_type_service_account -> service_account
+	s = strings.TrimPrefix(s, prefix)
+	s = strings.TrimPrefix(s, "_")
+
+	// service_account -> service account
+	s = strings.ReplaceAll(s, "_", " ")
+
+	// service account -> Service Account
+	return cases.Title(language.AmericanEnglish).String(s)
 }
