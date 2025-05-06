@@ -182,14 +182,18 @@ func namespaceEntitlementID(resourceID string, role string) string {
 	return fmt.Sprintf(namespaceEntitlementIDTemplate, resourceID, role)
 }
 
-func accountAccessRoleFromString(in string) identityv1.AccountAccess_Role {
+func fromStringToEnum(prefix string, in string) string {
 	in = strings.Map(func(r rune) rune {
 		if r == '-' {
 			return '_'
 		}
 		return unicode.ToUpper(r)
 	}, in)
-	needle := fmt.Sprintf("ROLE_%s", in)
+	return fmt.Sprintf("%s_%s", prefix, in)
+}
+
+func accountAccessRoleFromString(in string) identityv1.AccountAccess_Role {
+	needle := fromStringToEnum("ROLE", in)
 	rv, ok := identityv1.AccountAccess_Role_value[needle]
 	if !ok {
 		return identityv1.AccountAccess_ROLE_UNSPECIFIED
@@ -198,18 +202,12 @@ func accountAccessRoleFromString(in string) identityv1.AccountAccess_Role {
 }
 
 func namespaceAccessPermissionFromString(in string) identityv1.NamespaceAccess_Permission {
-	var rv identityv1.NamespaceAccess_Permission
-	switch strings.ToLower(in) {
-	case namespacePermissionName(identityv1.NamespaceAccess_PERMISSION_ADMIN):
-		rv = identityv1.NamespaceAccess_PERMISSION_ADMIN
-	case namespacePermissionName(identityv1.NamespaceAccess_PERMISSION_WRITE):
-		rv = identityv1.NamespaceAccess_PERMISSION_WRITE
-	case namespacePermissionName(identityv1.NamespaceAccess_PERMISSION_READ):
-		rv = identityv1.NamespaceAccess_PERMISSION_READ
-	default:
-		rv = identityv1.NamespaceAccess_PERMISSION_UNSPECIFIED
+	needle := fromStringToEnum("PERMISSION", in)
+	rv, ok := identityv1.NamespaceAccess_Permission_value[needle]
+	if !ok {
+		return identityv1.NamespaceAccess_PERMISSION_UNSPECIFIED
 	}
-	return rv
+	return identityv1.NamespaceAccess_Permission(rv)
 }
 
 func accountAccessRoleFromID(in string, accountID string) identityv1.AccountAccess_Role {
@@ -229,7 +227,7 @@ func accountRoleName(in identityv1.AccountAccess_Role) string {
 }
 
 func namespacePermissionName(in identityv1.NamespaceAccess_Permission) string {
-	return strings.ToLower(strings.TrimPrefix(in.String(), "NamespaceAccessPermission"))
+	return strings.ToLower(strings.TrimPrefix(in.String(), "PERMISSION_"))
 }
 
 func getAccountRoleID(in identityv1.AccountAccess_Role, accountID string) string {
@@ -237,13 +235,13 @@ func getAccountRoleID(in identityv1.AccountAccess_Role, accountID string) string
 }
 
 func accountRoleDisplayName(in identityv1.AccountAccess_Role) string {
-	trimmed := strings.TrimPrefix(in.String(), "AccountAccessRole")
+	trimmed := strings.TrimPrefix(in.String(), "ROLE_")
 	split := camelcase.Split(trimmed)
 	return fmt.Sprintf("Account %s", cases.Title(language.English).String(strings.Join(split, " ")))
 }
 
 func namespacePermissionDisplayName(in identityv1.NamespaceAccess_Permission, ns string) string {
-	trimmed := strings.TrimPrefix(in.String(), "NamespaceAccessPermission")
+	trimmed := strings.TrimPrefix(in.String(), "PERMISSION_")
 	split := camelcase.Split(trimmed)
 	return fmt.Sprintf("Namespace %s %s", ns, cases.Title(language.English).String(strings.Join(split, " ")))
 }
