@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -182,22 +183,18 @@ func namespaceEntitlementID(resourceID string, role string) string {
 }
 
 func accountAccessRoleFromString(in string) identityv1.AccountAccess_Role {
-	var rv identityv1.AccountAccess_Role
-	switch strings.ToLower(in) {
-	case accountRoleName(identityv1.AccountAccess_ROLE_OWNER):
-		rv = identityv1.AccountAccess_ROLE_OWNER
-	case accountRoleName(identityv1.AccountAccess_ROLE_ADMIN):
-		rv = identityv1.AccountAccess_ROLE_ADMIN
-	case accountRoleName(identityv1.AccountAccess_ROLE_DEVELOPER):
-		rv = identityv1.AccountAccess_ROLE_DEVELOPER
-	case accountRoleName(identityv1.AccountAccess_ROLE_FINANCE_ADMIN):
-		rv = identityv1.AccountAccess_ROLE_FINANCE_ADMIN
-	case accountRoleName(identityv1.AccountAccess_ROLE_READ):
-		rv = identityv1.AccountAccess_ROLE_READ
-	default:
-		rv = identityv1.AccountAccess_ROLE_UNSPECIFIED
+	in = strings.Map(func(r rune) rune {
+		if r == '-' {
+			return '_'
+		}
+		return unicode.ToUpper(r)
+	}, in)
+	needle := fmt.Sprintf("ROLE_%s", in)
+	rv, ok := identityv1.AccountAccess_Role_value[needle]
+	if !ok {
+		return identityv1.AccountAccess_ROLE_UNSPECIFIED
 	}
-	return rv
+	return identityv1.AccountAccess_Role(rv)
 }
 
 func namespaceAccessPermissionFromString(in string) identityv1.NamespaceAccess_Permission {
@@ -225,7 +222,7 @@ func accountAccessRoleFromID(in string, accountID string) identityv1.AccountAcce
 }
 
 func accountRoleName(in identityv1.AccountAccess_Role) string {
-	trimmed := strings.TrimPrefix(in.String(), "AccountAccessRole")
+	trimmed := strings.TrimPrefix(in.String(), "ROLE_")
 	split := camelcase.Split(trimmed)
 	joined := strings.Join(split, "-")
 	return strings.ToLower(joined)
