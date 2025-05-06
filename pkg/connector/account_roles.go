@@ -12,11 +12,11 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
-	identityv1 "go.temporal.io/api/cloud/identity/v1"
+	identityv1 "go.temporal.io/cloud-sdk/api/identity/v1"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
-	cloudservicev1 "go.temporal.io/api/cloud/cloudservice/v1"
+	cloudservicev1 "go.temporal.io/cloud-sdk/api/cloudservice/v1"
 
 	"github.com/conductorone/baton-temporalcloud/pkg/client"
 )

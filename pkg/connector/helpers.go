@@ -19,10 +19,10 @@ import (
 	"github.com/fatih/camelcase"
 	"go.uber.org/zap"
 
-	cloudservicev1 "go.temporal.io/api/cloud/cloudservice/v1"
-	identityv1 "go.temporal.io/api/cloud/identity/v1"
-	namespacev1 "go.temporal.io/api/cloud/namespace/v1"
-	operationv1 "go.temporal.io/api/cloud/operation/v1"
+	cloudservicev1 "go.temporal.io/cloud-sdk/api/cloudservice/v1"
+	identityv1 "go.temporal.io/cloud-sdk/api/identity/v1"
+	namespacev1 "go.temporal.io/cloud-sdk/api/namespace/v1"
+	operationv1 "go.temporal.io/cloud-sdk/api/operation/v1"
 )
 
 func protoUserToResource(proto *identityv1.User) (*v2.Resource, error) {

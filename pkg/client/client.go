@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"strings"
 
-	cloudservicev1 "go.temporal.io/api/cloud/cloudservice/v1"
+	cloudservicev1 "go.temporal.io/cloud-sdk/api/cloudservice/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
