@@ -178,6 +178,10 @@ func (o *accountRoleBuilder) Grant(ctx context.Context, principal *v2.Resource, 
 	req := &cloudservicev1.UpdateUserRequest{UserId: userID, Spec: newSpec, ResourceVersion: userResp.GetUser().GetResourceVersion()}
 	resp, err := o.client.UpdateUser(ctx, req)
 	if err != nil {
+		if strings.Contains(err.Error(), "nothing to change") {
+			return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
+		}
+
 		return nil, nil, fmt.Errorf("temporalcloud-connector: could not grant entitlement to user: %w", err)
 	}
 
