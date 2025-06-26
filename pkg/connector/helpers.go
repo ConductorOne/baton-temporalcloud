@@ -98,7 +98,7 @@ func createAccountRoleGrant(user *identityv1.User, ar *v2.Resource, accountID st
 		},
 	}
 
-	accountRole := accountAccessRoleFromID(ar.GetId().GetResource(), accountID)
+	accountRole := AccountAccessRoleFromID(ar.GetId().GetResource(), accountID)
 	if slices.Contains(immutableAccountRoles, accountRole) {
 		annos = append(annos, &v2.GrantImmutable{})
 	}
@@ -120,7 +120,7 @@ func awaitAsyncOperation(ctx context.Context, l *zap.Logger, client cloudservice
 		case <-time.After(retryDelay):
 		}
 
-		l.Debug("temporalcloud-connector: waiting for operation to complete, checking status...")
+		l.Debug("baton-temporalcloud: waiting for operation to complete, checking status...")
 		complete, err = checkAsyncOperation(ctx, client, requestID)
 		if err != nil {
 			return err
@@ -192,13 +192,38 @@ func fromStringToEnum(prefix string, in string) string {
 	return fmt.Sprintf("%s_%s", prefix, in)
 }
 
-func accountAccessRoleFromString(in string) identityv1.AccountAccess_Role {
-	needle := fromStringToEnum("ROLE", in)
-	rv, ok := identityv1.AccountAccess_Role_value[needle]
-	if !ok {
+// AccountAccessRoleFromStringOrDefault is like AccountAccessRoleFromString, but will return
+// AccountAccess_ROLE_UNSPECIFIED instead of an error.
+func AccountAccessRoleFromStringOrDefault(in string) identityv1.AccountAccess_Role {
+	role, err := AccountAccessRoleFromString(in)
+	if err != nil {
 		return identityv1.AccountAccess_ROLE_UNSPECIFIED
 	}
-	return identityv1.AccountAccess_Role(rv)
+	return *role
+}
+
+// AccountAccessRoleFromString parses a string into an AccountAccess_Role using the following (case-insensitive) mapping:
+//
+//	AccountAccess_ROLE_UNSPECIFIED: "unspecified", "role_unspecified"
+//	AccountAccess_ROLE_OWNER: "owner", "role_owner"
+//	AccountAccess_ROLE_ADMIN: "admin", "role_admin"
+//	AccountAccess_ROLE_DEVELOPER: "developer", "role_developer"
+//	AccountAccess_ROLE_FINANCE_ADMIN: "finance-admin", "finance_admin", "role_finance_admin"
+//	AccountAccess_ROLE_READ: "read", "role_read"
+//
+// Any unknown values with return an error
+func AccountAccessRoleFromString(in string) (*identityv1.AccountAccess_Role, error) {
+	if role, ok := identityv1.AccountAccess_Role_value[strings.ToUpper(in)]; ok {
+		rv := identityv1.AccountAccess_Role(role)
+		return &rv, nil
+	}
+	needle := fromStringToEnum("ROLE", in)
+	val, ok := identityv1.AccountAccess_Role_value[needle]
+	if !ok {
+		return nil, fmt.Errorf("unknown AccountAccess_Role: %s", needle)
+	}
+	rv := identityv1.AccountAccess_Role(val)
+	return &rv, nil
 }
 
 func namespaceAccessPermissionFromString(in string) identityv1.NamespaceAccess_Permission {
@@ -210,13 +235,13 @@ func namespaceAccessPermissionFromString(in string) identityv1.NamespaceAccess_P
 	return identityv1.NamespaceAccess_Permission(rv)
 }
 
-func accountAccessRoleFromID(in string, accountID string) identityv1.AccountAccess_Role {
+func AccountAccessRoleFromID(in string, accountID string) identityv1.AccountAccess_Role {
 	if strings.HasSuffix(in, accountID) { // handle legacy admin role ID
 		return identityv1.AccountAccess_ROLE_ADMIN
 	}
 
 	role := strings.TrimPrefix(in, accountID+"-")
-	return accountAccessRoleFromString(role)
+	return AccountAccessRoleFromStringOrDefault(role)
 }
 
 func accountRoleName(in identityv1.AccountAccess_Role) string {
