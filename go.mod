@@ -10,7 +10,7 @@ require (
 	github.com/quasilyte/go-ruleguard/dsl v0.3.22
 	github.com/spf13/viper v1.20.1
 	github.com/stretchr/testify v1.10.0
-	go.temporal.io/cloud-sdk v0.3.0
+	go.temporal.io/cloud-sdk v0.3.1
 	go.uber.org/zap v1.27.0
 	golang.org/x/text v0.25.0
 	google.golang.org/grpc v1.72.0
