@@ -211,7 +211,7 @@ func AccountAccessRoleFromStringOrDefault(in string) identityv1.AccountAccess_Ro
 //	AccountAccess_ROLE_FINANCE_ADMIN: "finance-admin", "finance_admin", "role_finance_admin"
 //	AccountAccess_ROLE_READ: "read", "role_read"
 //
-// Any unknown values with return an error
+// Any unknown values with return an error.
 func AccountAccessRoleFromString(in string) (*identityv1.AccountAccess_Role, error) {
 	if role, ok := identityv1.AccountAccess_Role_value[strings.ToUpper(in)]; ok {
 		rv := identityv1.AccountAccess_Role(role)
