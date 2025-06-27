@@ -176,7 +176,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: state
-          path: dev/terraform.state
+          path: dev/terraform.tfstate
       - name: "Delete test namesapce"
         run: |
           terraform apply -destroy -auto-approve -input=false
