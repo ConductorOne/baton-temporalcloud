@@ -119,7 +119,7 @@ jobs:
           ./baton-temporalcloud && baton grants
       - name: Check grant was granted
         run: |
-          ./baton-temporalcloud && baton grants --entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --output-format=json | jq --exit-status '.grants[].principal.id.resource == env.PRINCIPAL_ID"'
+          ./baton-temporalcloud && baton grants --entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --output-format=json | jq --exit-status '.grants[].principal.id.resource == env.PRINCIPAL_ID'
         env:
           PRINCIPAL_ID: ${{ steps.user.outputs.stdout }}
       - name: Revoke grants
