@@ -176,7 +176,8 @@ func (o *userBuilder) Delete(ctx context.Context, resourceID *v2.ResourceId) (an
 	}
 
 	req := &cloudservicev1.DeleteUserRequest{
-		UserId: userID,
+		UserId:          userID,
+		ResourceVersion: userResp.GetUser().GetResourceVersion(),
 	}
 	resp, err := o.client.DeleteUser(ctx, req)
 	if err != nil {
