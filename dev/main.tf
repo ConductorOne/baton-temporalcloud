@@ -11,7 +11,7 @@ provider "temporalcloud" {
 }
 
 resource "temporalcloud_namespace" "test_namespace" {
-  name = var.TEST_NAMESPACE_NAME,
+  name = var.TEST_NAMESPACE_NAME
   regions = ["aws-us-west-2"]
   api_key_auth = true
   retention_days = 7
