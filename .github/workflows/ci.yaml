@@ -105,7 +105,7 @@ jobs:
         id: user
         with:
           run: |
-            ./baton-temporalcloud && baton resources --resource-type=user --output-format=json | jq --exit-status --raw-output '.resources | map(.resource) | .[] | select(.displayName == "${{ env.USER_EMAIL }}" | .id.resource)'
+            ./baton-temporalcloud && baton resources --resource-type=user --output-format=json | jq --exit-status --raw-output '.resources |  map(if .resource.displayName == "${{ env.USER_EMAIL }}" then .resource.id.resource else empty end) | if length == 1 then .[0] else null end'
       - name: list grants
         run: |
           ./baton-temporalcloud && baton grants
