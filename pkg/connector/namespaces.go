@@ -138,19 +138,19 @@ func (o *namespaceBuilder) Grant(ctx context.Context, principal *v2.Resource, e 
 
 	enIDParts := strings.Split(entitlementID, ":")
 	if len(enIDParts) != 3 {
-		return nil, nil, fmt.Errorf("temporalcloud-connector: invalid entitlement ID %s", entitlementID)
+		return nil, nil, fmt.Errorf("baton-temporalcloud: invalid entitlement ID %s", entitlementID)
 	}
 
 	nsRole := enIDParts[2]
 
 	namespaceRole := namespaceAccessPermissionFromString(nsRole)
 	if namespaceRole == identityv1.NamespaceAccess_PERMISSION_UNSPECIFIED {
-		return nil, nil, fmt.Errorf("temporalcloud-connector: invalid namespace permission %s", nsRole)
+		return nil, nil, fmt.Errorf("baton-temporalcloud: invalid namespace permission %s", nsRole)
 	}
 
 	userResp, err := o.client.GetUser(ctx, &cloudservicev1.GetUserRequest{UserId: userID})
 	if err != nil {
-		return nil, nil, fmt.Errorf("temporalcloud-connector: couldn't retrieve user: %w", err)
+		return nil, nil, fmt.Errorf("baton-temporalcloud: couldn't retrieve user: %w", err)
 	}
 	user := userResp.GetUser()
 	spec := user.GetSpec()
@@ -177,7 +177,7 @@ func (o *namespaceBuilder) Grant(ctx context.Context, principal *v2.Resource, e 
 			return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
 		}
 
-		return nil, nil, fmt.Errorf("temporalcloud-connector: could not grant entitlement to user: %w", err)
+		return nil, nil, fmt.Errorf("baton-temporalcloud: could not grant entitlement to user: %w", err)
 	}
 
 	retryDelay := resp.GetAsyncOperation().GetCheckDuration().AsDuration()
@@ -194,7 +194,7 @@ func (o *namespaceBuilder) Grant(ctx context.Context, principal *v2.Resource, e 
 	defer cancel()
 	err = awaitAsyncOperation(waitCtx, l, o.client, requestID, retryDelay)
 	if err != nil {
-		return nil, nil, fmt.Errorf("temporalcloud-connector: namespace assignment creation failed: %w", err)
+		return nil, nil, fmt.Errorf("baton-temporalcloud: namespace assignment creation failed: %w", err)
 	}
 
 	g, err := createNamespaceGrant(user, namespace, namespaceRole)
@@ -218,21 +218,21 @@ func (o *namespaceBuilder) Revoke(ctx context.Context, g *v2.Grant) (annotations
 
 	userResp, err := o.client.GetUser(ctx, &cloudservicev1.GetUserRequest{UserId: userID})
 	if err != nil {
-		return nil, fmt.Errorf("temporalcloud-connector: couldn't retrieve user: %w", err)
+		return nil, fmt.Errorf("baton-temporalcloud: couldn't retrieve user: %w", err)
 	}
 	user := userResp.GetUser()
 	spec := user.GetSpec()
 	_, ok := spec.GetAccess().GetNamespaceAccesses()[namespaceID]
 	if !ok {
 		annos := annotations.New(&v2.GrantAlreadyRevoked{})
-		return annos, fmt.Errorf("temporalcloud-connector: grant does not exist for user")
+		return annos, fmt.Errorf("baton-temporalcloud: grant does not exist for user")
 	}
 
 	delete(spec.Access.NamespaceAccesses, namespaceID)
 	req := &cloudservicev1.UpdateUserRequest{UserId: userID, Spec: spec, ResourceVersion: user.GetResourceVersion()}
 	resp, err := o.client.UpdateUser(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("temporalcloud-connector: could not revoke grant for user: %w", err)
+		return nil, fmt.Errorf("baton-temporalcloud: could not revoke grant for user: %w", err)
 	}
 
 	retryDelay := resp.GetAsyncOperation().GetCheckDuration().AsDuration()
@@ -249,7 +249,7 @@ func (o *namespaceBuilder) Revoke(ctx context.Context, g *v2.Grant) (annotations
 	defer cancel()
 	err = awaitAsyncOperation(waitCtx, l, o.client, requestID, retryDelay)
 	if err != nil {
-		return nil, fmt.Errorf("temporalcloud-connector: namespace assignment deletion failed: %w", err)
+		return nil, fmt.Errorf("baton-temporalcloud: namespace assignment deletion failed: %w", err)
 	}
 
 	annos := annotations.New()
