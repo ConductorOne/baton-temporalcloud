@@ -1,5 +1,8 @@
 name: ci
-on: pull_request
+on:
+  pull_request:
+    paths-ignore:
+      - "README.md"
 env:
   TEST_NAMESPACE_NAME: "ci-test"
 
@@ -40,71 +43,35 @@ jobs:
         with:
           test-results: test.json
 
-# TODO use Terraform for the setup/teardown
-
   setup-temporal-cloud:
     runs-on: ubuntu-latest
     env:
       TEMPORAL_CLOUD_API_KEY: ${{ secrets.TEMPORAL_CLOUD_API_KEY }}
       AUTO_CONFIRM: true
-    outputs:
-      user-id: ${{ steps.user-id.outputs.user }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      - name: Install tcld
-        uses: ./.github/actions/install-tcld
-      - name: Create test namespace
-        run: |
-          if ! tcld gen ca --org c1 -d 30d --ca-cert ca.pem --ca-key key.pem; then
-            exit 1
-          fi
-          if ! request_id=$(tcld namespace create --ca-certificate-file=ca.pem --namespace=${{ env.TEST_NAMESPACE_NAME }} --region="us-west-2" | jq --exit-status '.requestStatus.requestId' | tr -d '"'); then
-            exit 1
-          fi
-          while true; do
-            if ! resp=$(tcld request get --request-id=$request_id | jq --exit-status '.requestStatus'); then
-              exit 1
-            fi
-            if ! request_state=$(echo $resp | jq --exit-status '.state' | tr -d '"'); then
-              exit 1
-            fi
-            if ! failure_reason=$(echo $resp | jq --exit-status '.failureReason' | tr -d '"'); then
-              exit 1
-            fi
-            if [[ "$failure_reason" != "" ]]; then
-              exit 1
-            fi
-            if [[ "$request_state" == "Fulfilled" ]]; then
-              break
-            fi
-          done
-      - name: Create test user
-        run: |
-          if ! request_id=$(tcld user invite --account-role="Read" --user-email "ci-test@${{ secrets.TEST_EMAIL_DOMAIN}}" | jq --exit-status '.requestId' | tr -d '"'); then
-            exit 1
-          fi
-          while true; do
-            if ! resp=$(tcld request get --request-id=$request_id | jq --exit-status '.requestStatus'); then
-              exit 1
-            fi
-            if ! request_state=$(echo $resp | jq --exit-status '.state' | tr -d '"'); then
-              exit 1
-            fi
-            if ! failure_reason=$(echo $resp | jq --exit-status '.failureReason' | tr -d '"'); then
-              exit 1
-            fi
-            if [[ "$failure_reason" != "" ]]; then
-              exit 1
-            fi
-            if [[ "$request_state" == "Fulfilled" ]]; then
-              break
-            fi
-          done
-      - name: Send user ID to job output
-        id: user-id
-        run: |
-          ID=$(tcld user get --user-email "ci-test@${{ secrets.TEST_EMAIL_DOMAIN}}" | jq --exit-status '.id' | tr -d '"') && echo "user=$ID" >> "$GITHUB_OUTPUT"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.1.7"
+      - run: |
+          terraform init -input=false
+        working-directory: dev
+        name: "Initialize Terraform"
+      - run: |
+          terraform apply -auto-approve -input=false
+        working-directory: dev
+        id: apply
+        name: "Create test namespace"
+      - name: "Upload state"
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: state-${{ github.run_id }}
+          path: dev/terraform.tfstate
+          retention-days: 1
+          overwrite: true
 
   test:
     runs-on: ubuntu-latest
@@ -115,8 +82,8 @@ jobs:
       CONNECTOR_GRANT: 'namespace:ci-test.iv3js:read:user'
       CONNECTOR_IMMUTABLE_ENTITLEMENT: 'account-role:iv3js-owner:member'
       CONNECTOR_ENTITLEMENT: 'namespace:ci-test.iv3js:read'
-      CONNECTOR_PRINCIPAL_ID: ${{ needs.setup-temporal-cloud.outputs.user-id }}
       CONNECTOR_PRINCIPAL_TYPE: 'user'
+      USER_EMAIL: "ci-test@${{ secrets.TEST_EMAIL_DOMAIN}}"
     steps:
       - name: Install Go
         uses: actions/setup-go@v4
@@ -130,28 +97,61 @@ jobs:
         run: ./baton-temporalcloud
       - name: Install baton
         run: ./scripts/get-baton.sh && mv baton /usr/local/bin
+      - name: provision user
+        run: |
+          ./baton-temporalcloud && ./baton-temporalcloud --create-account-profile '{"email": "${{ env.USER_EMAIL }}"}'
+      - uses: mathiasvr/command-output@v2.0.0
+        name: Check user was provisioned
+        id: user
+        with:
+          run: |
+            ./baton-temporalcloud && baton resources --resource-type=user --output-format=json | jq --exit-status --raw-output '.resources | map(.resource) | .[] | select(.displayName == "${{ env.USER_EMAIL }}" | .id.resource)'
       - name: list grants
         run: |
           ./baton-temporalcloud && baton grants
       - name: Grant entitlement
-        run: ./baton-temporalcloud && ./baton-temporalcloud --grant-entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --grant-principal="${{ env.CONNECTOR_PRINCIPAL_ID }}" --grant-principal-type="${{ env.CONNECTOR_PRINCIPAL_TYPE }}"
+        env:
+          PRINCIPAL_ID: ${{ steps.user.outputs.stdout }}
+        run: |
+          ./baton-temporalcloud && ./baton-temporalcloud --grant-entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --grant-principal="$PRINCIPAL_ID" --grant-principal-type="${{ env.CONNECTOR_PRINCIPAL_TYPE }}"
       - name: list grants
         run: |
           ./baton-temporalcloud && baton grants
       - name: Check grant was granted
         run: |
-          ./baton-temporalcloud && baton grants --entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --output-format=json | jq --exit-status ".grants[].principal.id.resource == \"${{ env.CONNECTOR_PRINCIPAL_ID }}\""
+          ./baton-temporalcloud && baton grants --entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --output-format=json | jq --exit-status '.grants[].principal.id.resource == env.PRINCIPAL_ID"'
+        env:
+          PRINCIPAL_ID: ${{ steps.user.outputs.stdout }}
       - name: Revoke grants
-        run: ./baton-temporalcloud && ./baton-temporalcloud --revoke-grant="${{ env.CONNECTOR_GRANT }}:${{ env.CONNECTOR_PRINCIPAL_ID }}"
+        run: ./baton-temporalcloud && ./baton-temporalcloud --revoke-grant="${{ env.CONNECTOR_GRANT }}:$PRINCIPAL_ID"
+        env:
+          PRINCIPAL_ID: ${{ steps.user.outputs.stdout }}
       - name: Check grant was revoked
-        run: ./baton-temporalcloud && baton grants --entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --output-format=json | jq --exit-status "if .grants then .grants[]?.principal.id.resource != \"${{ env.CONNECTOR_PRINCIPAL_ID }}\" else . end"
+        run: ./baton-temporalcloud && baton grants --entitlement="${{ env.CONNECTOR_ENTITLEMENT }}" --output-format=json | jq --exit-status 'if .grants then .grants[]?.principal.id.resource != env.PRINCIPAL_ID else . end'
+        env:
+          PRINCIPAL_ID: ${{ steps.user.outputs.stdout }}
       - name: Attempt to grant immutable grant
         # CLI will return a non-zero code here, but we want to continue anyway
         run: |
-          ./baton-temporalcloud && (./baton-temporalcloud --grant-entitlement="${{ env.CONNECTOR_IMMUTABLE_ENTITLEMENT }}" --grant-principal="${{ env.CONNECTOR_PRINCIPAL_ID }}" --grant-principal-type="${{ env.CONNECTOR_PRINCIPAL_TYPE }}" || true)
+          ./baton-temporalcloud && (./baton-temporalcloud --grant-entitlement="${{ env.CONNECTOR_IMMUTABLE_ENTITLEMENT }}" --grant-principal="$PRINCIPAL_ID" --grant-principal-type="${{ env.CONNECTOR_PRINCIPAL_TYPE }}" || true)
+        env:
+          PRINCIPAL_ID: ${{ steps.user.outputs.stdout }}
       - name: Check immutable grant was not granted
+        env:
+          PRINCIPAL_ID: ${{ steps.user.outputs.stdout }}
         run: |
-          ./baton-temporalcloud && baton grants --entitlement="${{ env.CONNECTOR_IMMUTABLE_ENTITLEMENT }}" --output-format=json | jq --exit-status "if .grants then .grants[]?.principal.id.resource != \"${{ env.CONNECTOR_PRINCIPAL_ID }}\" else . end"
+          ./baton-temporalcloud && baton grants --entitlement="${{ env.CONNECTOR_IMMUTABLE_ENTITLEMENT }}" --output-format=json | jq --exit-status '.grants | map(if .principal.id.resource == env.PRINCIPAL_ID then .principal else empty end) | length == 0'
+      - name: Deprovision user
+        env:
+          PRINCIPAL_ID: ${{ steps.user.outputs.stdout }}
+        run: |
+          ./baton-temporalcloud && ./baton-temporalcloud --delete-resource="$PRINCIPAL_ID" --delete-resource-type=user
+      - name: Check user was deprovisioned
+        env:
+          PRINCIPAL_ID: ${{ steps.user.outputs.stdout }}
+        run: |
+          ./baton-temporalcloud && baton resources --resource-type=user --output-format=json | jq --exit-status '.resources | map(if .resource.id.resource == env.PRINCIPAL_ID then .resource else empty end) | length == 0'  
+  
 
   teardown-temporal-cloud:
     runs-on: ubuntu-latest
@@ -164,11 +164,20 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      - name: Install tcld
-        uses: ./.github/actions/install-tcld
-      - name: Delete test namespace
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.1.7"
+      - run: |
+          terraform init -input=false
+        working-directory: dev
+        name: "Initialize Terraform"
+      - name: "Get state"
+        uses: actions/download-artifact@v4
+        with:
+          name: state-${{ github.run_id }}
+          path: dev/terraform.state
+      - name: "Delete test namesapce"
         run: |
-          tcld namespace delete --namespace "${{ env.TEST_NAMESPACE_NAME }}.iv3js"
-      - name: Delete test user
-        run: |
-          tcld user delete --user-email "ci-test@${{ secrets.TEST_EMAIL_DOMAIN}}"
+          terraform apply -destroy -auto-approve -input=false
+        working-directory: dev
