@@ -68,7 +68,7 @@ jobs:
         if: ${{ success() }}
         uses: actions/upload-artifact@v4
         with:
-          name: state-${{ github.run_id }}
+          name: state
           path: dev/terraform.tfstate
           retention-days: 1
           overwrite: true
@@ -175,7 +175,7 @@ jobs:
       - name: "Get state"
         uses: actions/download-artifact@v4
         with:
-          name: state-${{ github.run_id }}
+          name: state
           path: dev/terraform.state
       - name: "Delete test namesapce"
         run: |
