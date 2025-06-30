@@ -255,7 +255,9 @@ func (o *accountRoleBuilder) Revoke(ctx context.Context, g *v2.Grant) (annotatio
 	spec := user.GetSpec()
 
 	if downgradedRole == spec.GetAccess().GetAccountAccess().GetRole() {
-		return nil, fmt.Errorf("baton-temporalcloud: user already has %s role", downgradedRole)
+		annos := annotations.New()
+		annos.Append(&v2.GrantAlreadyRevoked{})
+		return annos, fmt.Errorf("baton-temporalcloud: user already has %s role", downgradedRole)
 	}
 
 	newSpec := &identityv1.UserSpec{
