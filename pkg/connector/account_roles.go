@@ -68,7 +68,7 @@ func (o *accountRoleBuilder) Entitlements(ctx context.Context, r *v2.Resource, _
 		return nil, "", nil, err
 	}
 
-	ar := accountAccessRoleFromID(r.GetId().GetResource(), accountID)
+	ar := AccountAccessRoleFromID(r.GetId().GetResource(), accountID)
 
 	annos := []proto.Message{
 		&v2.V1Identifier{
@@ -117,7 +117,7 @@ func (o *accountRoleBuilder) Grants(ctx context.Context, r *v2.Resource, pToken 
 
 	var rv []*v2.Grant
 	for _, user := range resp.GetUsers() {
-		if user.GetSpec().GetAccess().GetAccountAccess().GetRole() != accountAccessRoleFromID(r.Id.Resource, accountID) {
+		if user.GetSpec().GetAccess().GetAccountAccess().GetRole() != AccountAccessRoleFromID(r.Id.Resource, accountID) {
 			continue
 		}
 		grantResource, err := createAccountRoleGrant(user, r, accountID)
@@ -144,22 +144,22 @@ func (o *accountRoleBuilder) Grant(ctx context.Context, principal *v2.Resource, 
 
 	userResp, err := o.client.GetUser(ctx, &cloudservicev1.GetUserRequest{UserId: userID})
 	if err != nil {
-		return nil, nil, fmt.Errorf("temporalcloud-connnector: couldn't retrieve user: %w", err)
+		return nil, nil, fmt.Errorf("baton-temporalcloud: couldn't retrieve user: %w", err)
 	}
 
 	currRole := userResp.GetUser().GetSpec().GetAccess().GetAccountAccess().GetRole()
 	if slices.Contains(immutableAccountRoles, currRole) {
-		zap.L().Info("temporalcloud-connector: user has immutable role, skipping grant", zap.String("user_id", userID))
+		zap.L().Info("baton-temporalcloud: user has immutable role, skipping grant", zap.String("user_id", userID))
 		return nil, nil, nil
 	}
 
-	newRole := accountAccessRoleFromID(accountRoleID, accountID)
+	newRole := AccountAccessRoleFromID(accountRoleID, accountID)
 	if newRole == identityv1.AccountAccess_ROLE_UNSPECIFIED {
-		return nil, nil, fmt.Errorf("temporalcloud-connector: invalid account role %s", strings.TrimPrefix(accountRoleID, accountID+"-"))
+		return nil, nil, fmt.Errorf("baton-temporalcloud: invalid account role %s", strings.TrimPrefix(accountRoleID, accountID+"-"))
 	}
 
 	if slices.Contains(immutableAccountRoles, newRole) {
-		return nil, nil, fmt.Errorf("temporalcloud-connector: role %s is immutable and cannot be granted", accountRoleDisplayName(newRole))
+		return nil, nil, fmt.Errorf("baton-temporalcloud: role %s is immutable and cannot be granted", accountRoleDisplayName(newRole))
 	}
 
 	user := userResp.GetUser()
@@ -182,7 +182,7 @@ func (o *accountRoleBuilder) Grant(ctx context.Context, principal *v2.Resource, 
 			return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
 		}
 
-		return nil, nil, fmt.Errorf("temporalcloud-connector: could not grant entitlement to user: %w", err)
+		return nil, nil, fmt.Errorf("baton-temporalcloud: could not grant entitlement to user: %w", err)
 	}
 
 	retryDelay := resp.GetAsyncOperation().GetCheckDuration().AsDuration()
@@ -199,7 +199,7 @@ func (o *accountRoleBuilder) Grant(ctx context.Context, principal *v2.Resource, 
 	defer cancel()
 	err = awaitAsyncOperation(waitCtx, l, o.client, requestID, retryDelay)
 	if err != nil {
-		return nil, nil, fmt.Errorf("temporalcloud-connector: account role assignment creation failed: %w", err)
+		return nil, nil, fmt.Errorf("baton-temporalcloud: account role assignment creation failed: %w", err)
 	}
 
 	annos := annotations.New()
@@ -228,20 +228,52 @@ func (o *accountRoleBuilder) Revoke(ctx context.Context, g *v2.Grant) (annotatio
 	accountRoleID := accountRole.GetId().GetResource()
 	accountRoleType := accountRole.GetId().GetResourceType()
 
-	ar := accountAccessRoleFromID(accountRoleID, accountID)
+	ar := AccountAccessRoleFromID(accountRoleID, accountID)
 	if slices.Contains(immutableAccountRoles, ar) {
-		return nil, fmt.Errorf("temporalcloud-connector: role %s is immutable and cannot be revoked", accountRoleDisplayName(ar))
+		return nil, fmt.Errorf("baton-temporalcloud: role %s is immutable and cannot be revoked", accountRoleDisplayName(ar))
 	}
 
 	userResp, err := o.client.GetUser(ctx, &cloudservicev1.GetUserRequest{UserId: userID})
 	if err != nil {
-		return nil, fmt.Errorf("temporalcloud-connnector: couldn't retrieve user: %w", err)
+		return nil, fmt.Errorf("baton-temporalcloud: couldn't retrieve user: %w", err)
 	}
 
-	req := &cloudservicev1.DeleteUserRequest{UserId: userID, ResourceVersion: userResp.GetUser().GetResourceVersion()}
-	resp, err := o.client.DeleteUser(ctx, req)
+	user := userResp.GetUser()
+
+	var downgradedRole identityv1.AccountAccess_Role
+	switch ar {
+	case identityv1.AccountAccess_ROLE_ADMIN:
+		downgradedRole = identityv1.AccountAccess_ROLE_DEVELOPER
+	case identityv1.AccountAccess_ROLE_DEVELOPER:
+		downgradedRole = identityv1.AccountAccess_ROLE_READ
+	case identityv1.AccountAccess_ROLE_READ:
+		return nil, fmt.Errorf("baton-temporalcloud: revoking %s role would delete the user account", identityv1.AccountAccess_ROLE_READ)
+	default:
+		return nil, fmt.Errorf("baton-temporalcloud: invalid account role %s", ar)
+	}
+
+	spec := user.GetSpec()
+
+	if downgradedRole == spec.GetAccess().GetAccountAccess().GetRole() {
+		annos := annotations.New()
+		annos.Append(&v2.GrantAlreadyRevoked{})
+		return annos, fmt.Errorf("baton-temporalcloud: user already has %s role", downgradedRole)
+	}
+
+	newSpec := &identityv1.UserSpec{
+		Email: spec.GetEmail(),
+		Access: &identityv1.Access{
+			NamespaceAccesses: spec.GetAccess().GetNamespaceAccesses(),
+			AccountAccess: &identityv1.AccountAccess{
+				Role: downgradedRole,
+			},
+		},
+	}
+
+	req := &cloudservicev1.UpdateUserRequest{UserId: userID, Spec: newSpec, ResourceVersion: userResp.GetUser().GetResourceVersion()}
+	resp, err := o.client.UpdateUser(ctx, req)
 	if err != nil {
-		return nil, fmt.Errorf("temporalcloud-connector: could not revoke entitlement for user: %w", err)
+		return nil, fmt.Errorf("baton-temporalcloud: could not revoke entitlement for user: %w", err)
 	}
 
 	retryDelay := resp.GetAsyncOperation().GetCheckDuration().AsDuration()
@@ -258,7 +290,7 @@ func (o *accountRoleBuilder) Revoke(ctx context.Context, g *v2.Grant) (annotatio
 	defer cancel()
 	err = awaitAsyncOperation(waitCtx, l, o.client, requestID, retryDelay)
 	if err != nil {
-		return nil, fmt.Errorf("temporalcloud-connector: account role assignment deletion failed: %w", err)
+		return nil, fmt.Errorf("baton-temporalcloud: account role assignment deletion failed: %w", err)
 	}
 
 	annos := annotations.New()

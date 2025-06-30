@@ -16,11 +16,14 @@ import (
 	"github.com/conductorone/baton-temporalcloud/pkg/connector"
 )
 
+var defaultAccountRoleOpts = []string{"read", "developer", "admin"}
+
 const (
-	version       = "dev"
-	connectorName = "baton-temporalcloud"
-	apiKey        = "api-key"
-	allowInsecure = "allow-insecure"
+	version            = "dev"
+	connectorName      = "baton-temporalcloud"
+	apiKey             = "api-key"
+	allowInsecure      = "allow-insecure"
+	defaultAccountRole = "default-account-role"
 )
 
 var (
@@ -30,7 +33,16 @@ var (
 		field.WithDefaultValue(false),
 		field.WithDescription("Allow insecure TLS connections to the Temporal Cloud API."),
 	)
-	configurationFields = []field.SchemaField{APIKeyField, AllowInsecureField}
+	DefaultAccountRoleField = field.StringField(
+		defaultAccountRole,
+		field.WithRequired(false),
+		field.WithDescription(fmt.Sprintf("The default account role to use for account provisioning, must be one of %v", defaultAccountRoleOpts)),
+		field.WithDefaultValue("read"),
+		field.WithString(func(r *field.StringRuler) {
+			r.In(defaultAccountRoleOpts)
+		}),
+	)
+	configurationFields = []field.SchemaField{APIKeyField, AllowInsecureField, DefaultAccountRoleField}
 )
 
 func main() {
@@ -55,9 +67,15 @@ func main() {
 
 func getConnector(ctx context.Context, cfg *viper.Viper) (types.ConnectorServer, error) {
 	l := ctxzap.Extract(ctx)
+	var opts []connector.Opt
+	if cfg.IsSet(defaultAccountRole) && cfg.GetString(defaultAccountRole) != "" {
+		opts = append(opts, connector.WithDefaultAccountRole(cfg.GetString(defaultAccountRole)))
+	}
+
 	cb, err := connector.New(ctx,
 		cfg.GetString(apiKey),
 		cfg.GetBool(allowInsecure),
+		opts...,
 	)
 	if err != nil {
 		l.Error("error creating connector", zap.Error(err))

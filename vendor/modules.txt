@@ -426,6 +426,7 @@ github.com/spf13/viper/internal/features
 ## explicit; go 1.17
 github.com/stretchr/testify/assert
 github.com/stretchr/testify/assert/yaml
+github.com/stretchr/testify/require
 # github.com/subosito/gotenv v1.6.0
 ## explicit; go 1.18
 github.com/subosito/gotenv
@@ -528,7 +529,7 @@ go.temporal.io/api/internal/protojson/order
 go.temporal.io/api/internal/protojson/set
 go.temporal.io/api/internal/protojson/strs
 go.temporal.io/api/internal/strcase
-# go.temporal.io/cloud-sdk v0.3.0
+# go.temporal.io/cloud-sdk v0.3.1
 ## explicit; go 1.23.0
 go.temporal.io/cloud-sdk/api/account/v1
 go.temporal.io/cloud-sdk/api/cloudservice/v1
