@@ -93,6 +93,11 @@ func NewC1File(ctx context.Context, dbFilePath string, opts ...C1FOption) (*C1Fi
 		return nil, err
 	}
 
+	err = c1File.init(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	return c1File, nil
 }
 
@@ -140,11 +145,6 @@ func NewC1ZFile(ctx context.Context, outputFilePath string, opts ...C1ZOption) (
 	}
 
 	c1File.outputFilePath = outputFilePath
-
-	err = c1File.init(ctx)
-	if err != nil {
-		return nil, err
-	}
 
 	return c1File, nil
 }
@@ -290,4 +290,35 @@ func (c *C1File) validateSyncDb(ctx context.Context) error {
 	}
 
 	return c.validateDb(ctx)
+}
+
+func (c *C1File) OutputFilepath() (string, error) {
+	if c.outputFilePath == "" {
+		return "", fmt.Errorf("c1file: output file path is empty")
+	}
+	return c.outputFilePath, nil
+}
+
+func (c *C1File) AttachFile(other *C1File, dbName string) (*C1FileAttached, error) {
+	_, err := c.db.Exec(`ATTACH DATABASE ? AS ?`, other.dbFilePath, dbName)
+	if err != nil {
+		return nil, err
+	}
+
+	return &C1FileAttached{
+		safe: true,
+		file: c,
+	}, nil
+}
+
+func (c *C1FileAttached) DetachFile(dbName string) (*C1FileAttached, error) {
+	_, err := c.file.db.Exec(`DETACH DATABASE ?`, dbName)
+	if err != nil {
+		return nil, err
+	}
+
+	return &C1FileAttached{
+		safe: false,
+		file: c.file,
+	}, nil
 }

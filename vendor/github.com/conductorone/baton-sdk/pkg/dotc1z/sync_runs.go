@@ -301,6 +301,22 @@ func (c *C1File) LatestFinishedSync(ctx context.Context) (string, error) {
 	return s.ID, nil
 }
 
+func (c *C1File) LatestFinishedSyncAnyType(ctx context.Context) (string, error) {
+	ctx, span := tracer.Start(ctx, "C1File.LatestFinishedSyncAnyType")
+	defer span.End()
+
+	s, err := c.getFinishedSync(ctx, 0, SyncTypeAny)
+	if err != nil {
+		return "", err
+	}
+
+	if s == nil {
+		return "", nil
+	}
+
+	return s.ID, nil
+}
+
 func (c *C1File) getSync(ctx context.Context, syncID string) (*syncRun, error) {
 	ctx, span := tracer.Start(ctx, "C1File.getSync")
 	defer span.End()
@@ -338,6 +354,19 @@ func (c *C1File) getCurrentSync(ctx context.Context) (*syncRun, error) {
 	}
 
 	return c.getSync(ctx, c.currentSyncID)
+}
+
+func (c *C1File) SetCurrentSync(ctx context.Context, syncID string) error {
+	ctx, span := tracer.Start(ctx, "C1File.SetCurrentSync")
+	defer span.End()
+
+	_, err := c.getSync(ctx, syncID)
+	if err != nil {
+		return err
+	}
+
+	c.currentSyncID = syncID
+	return nil
 }
 
 func (c *C1File) CheckpointSync(ctx context.Context, syncToken string) error {
