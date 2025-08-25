@@ -22,6 +22,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/crypto"
 	"github.com/conductorone/baton-sdk/pkg/metrics"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
+	"github.com/conductorone/baton-sdk/pkg/retry"
 	"github.com/conductorone/baton-sdk/pkg/types"
 	"github.com/conductorone/baton-sdk/pkg/types/tasks"
 	"github.com/conductorone/baton-sdk/pkg/uhttp"
@@ -134,13 +135,57 @@ type CredentialManager interface {
 	RotateCapabilityDetails(ctx context.Context) (*v2.CredentialDetailsCredentialRotation, annotations.Annotations, error)
 }
 
-// EventProvider extends ConnectorBuilder to add capabilities for providing event streams.
-//
-// Implementing this interface indicates the connector can provide a stream of events
-// from the external system, enabling near real-time updates in Baton.
+// Compatibility interface lets us handle both EventFeed and EventProvider the same.
+type EventLister interface {
+	ListEvents(ctx context.Context, earliestEvent *timestamppb.Timestamp, pToken *pagination.StreamToken) ([]*v2.Event, *pagination.StreamState, annotations.Annotations, error)
+}
+
+// Deprecated: This interface is deprecated in favor of EventProviderV2 which supports
+// multiple event feeds. Implementing this interface indicates the connector can provide
+// a single stream of events from the external system, enabling near real-time updates
+// in Baton. New connectors should implement EventProviderV2 instead.
 type EventProvider interface {
 	ConnectorBuilder
-	ListEvents(ctx context.Context, earliestEvent *timestamppb.Timestamp, pToken *pagination.StreamToken) ([]*v2.Event, *pagination.StreamState, annotations.Annotations, error)
+	EventLister
+}
+
+// NewEventProviderV2 is a new interface that allows connectors to provide multiple event feeds.
+//
+// This is the recommended interface for implementing event feed support in new connectors.
+type EventProviderV2 interface {
+	ConnectorBuilder
+	EventFeeds(ctx context.Context) []EventFeed
+}
+
+// EventFeed is a single stream of events from the external system.
+//
+// EventFeedMetadata describes this feed, and a connector can have multiple feeds.
+type EventFeed interface {
+	EventLister
+	EventFeedMetadata(ctx context.Context) *v2.EventFeedMetadata
+}
+
+type oldEventFeedWrapper struct {
+	feed EventLister
+}
+
+const (
+	LegacyBatonFeedId = "baton_feed_event"
+)
+
+func (e *oldEventFeedWrapper) EventFeedMetadata(ctx context.Context) *v2.EventFeedMetadata {
+	return &v2.EventFeedMetadata{
+		Id:                  LegacyBatonFeedId,
+		SupportedEventTypes: []v2.EventType{v2.EventType_EVENT_TYPE_UNSPECIFIED},
+	}
+}
+
+func (e *oldEventFeedWrapper) ListEvents(
+	ctx context.Context,
+	earliestEvent *timestamppb.Timestamp,
+	pToken *pagination.StreamToken,
+) ([]*v2.Event, *pagination.StreamState, annotations.Annotations, error) {
+	return e.feed.ListEvents(ctx, earliestEvent, pToken)
 }
 
 // TicketManager extends ConnectorBuilder to add capabilities for ticket management.
@@ -203,7 +248,7 @@ type builderImpl struct {
 	accountManager          AccountManager
 	actionManager           CustomActionManager
 	credentialManagers      map[string]CredentialManager
-	eventFeed               EventProvider
+	eventFeeds              map[string]EventFeed
 	cb                      ConnectorBuilder
 	ticketManager           TicketManager
 	ticketingEnabled        bool
@@ -280,25 +325,36 @@ func (b *builderImpl) ListTicketSchemas(ctx context.Context, request *v2.Tickets
 		return nil, fmt.Errorf("error: ticket manager not implemented")
 	}
 
-	out, nextPageToken, annos, err := b.ticketManager.ListTicketSchemas(ctx, &pagination.Token{
-		Size:  int(request.PageSize),
-		Token: request.PageToken,
+	retryer := retry.NewRetryer(ctx, retry.RetryConfig{
+		MaxAttempts:  10,
+		InitialDelay: 15 * time.Second,
+		MaxDelay:     0,
 	})
-	if err != nil {
+
+	for {
+		out, nextPageToken, annos, err := b.ticketManager.ListTicketSchemas(ctx, &pagination.Token{
+			Size:  int(request.PageSize),
+			Token: request.PageToken,
+		})
+		if err == nil {
+			if request.PageToken != "" && request.PageToken == nextPageToken {
+				b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start))
+				return nil, fmt.Errorf("error: listing ticket schemas failed: next page token is the same as the current page token. this is most likely a connector bug")
+			}
+
+			b.m.RecordTaskSuccess(ctx, tt, b.nowFunc().Sub(start))
+			return &v2.TicketsServiceListTicketSchemasResponse{
+				List:          out,
+				NextPageToken: nextPageToken,
+				Annotations:   annos,
+			}, nil
+		}
+		if retryer.ShouldWaitAndRetry(ctx, err) {
+			continue
+		}
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start))
 		return nil, fmt.Errorf("error: listing ticket schemas failed: %w", err)
 	}
-	if request.PageToken != "" && request.PageToken == nextPageToken {
-		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start))
-		return nil, fmt.Errorf("error: listing ticket schemas failed: next page token is the same as the current page token. this is most likely a connector bug")
-	}
-
-	b.m.RecordTaskSuccess(ctx, tt, b.nowFunc().Sub(start))
-	return &v2.TicketsServiceListTicketSchemasResponse{
-		List:          out,
-		NextPageToken: nextPageToken,
-		Annotations:   annos,
-	}, nil
 }
 
 func (b *builderImpl) CreateTicket(ctx context.Context, request *v2.TicketsServiceCreateTicketRequest) (*v2.TicketsServiceCreateTicketResponse, error) {
@@ -415,6 +471,7 @@ func NewConnector(ctx context.Context, in interface{}, opts ...Opt) (types.Conne
 			accountManager:          nil,
 			actionManager:           nil,
 			credentialManagers:      make(map[string]CredentialManager),
+			eventFeeds:              make(map[string]EventFeed),
 			cb:                      c,
 			ticketManager:           nil,
 			nowFunc:                 time.Now,
@@ -429,8 +486,31 @@ func NewConnector(ctx context.Context, in interface{}, opts ...Opt) (types.Conne
 			ret.m = metrics.New(metrics.NewNoOpHandler(ctx))
 		}
 
+		if b, ok := c.(EventProviderV2); ok {
+			for _, ef := range b.EventFeeds(ctx) {
+				feedData := ef.EventFeedMetadata(ctx)
+				if feedData == nil {
+					return nil, fmt.Errorf("error: event feed metadata is nil")
+				}
+				if err := feedData.Validate(); err != nil {
+					return nil, fmt.Errorf("error: event feed metadata for %s is invalid: %w", feedData.Id, err)
+				}
+				if _, ok := ret.eventFeeds[feedData.Id]; ok {
+					return nil, fmt.Errorf("error: duplicate event feed id found: %s", feedData.Id)
+				}
+				ret.eventFeeds[feedData.Id] = ef
+			}
+		}
+
 		if b, ok := c.(EventProvider); ok {
-			ret.eventFeed = b
+			// Register the legacy Baton feed as a v2 event feed
+			// implementing both v1 and v2 event feeds is not supported.
+			if len(ret.eventFeeds) != 0 {
+				return nil, fmt.Errorf("error: using legacy event feed is not supported when using EventProviderV2")
+			}
+			ret.eventFeeds[LegacyBatonFeedId] = &oldEventFeedWrapper{
+				feed: b,
+			}
 		}
 
 		if ticketManager, ok := c.(TicketManager); ok {
@@ -586,8 +666,18 @@ func (b *builderImpl) ListResourceTypes(
 	tt := tasks.ListResourceTypesType
 	var out []*v2.ResourceType
 
+	if len(b.resourceBuilders) == 0 {
+		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start))
+		return nil, fmt.Errorf("error: no resource builders found")
+	}
+
 	for _, rb := range b.resourceBuilders {
 		out = append(out, rb.ResourceType(ctx))
+	}
+
+	if len(out) == 0 {
+		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start))
+		return nil, fmt.Errorf("error: no resource types found")
 	}
 
 	b.m.RecordTaskSuccess(ctx, tt, b.nowFunc().Sub(start))
@@ -639,7 +729,7 @@ func (b *builderImpl) GetResource(ctx context.Context, request *v2.ResourceGette
 	rb, ok := b.resourceTargetedSyncers[resourceType]
 	if !ok {
 		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start))
-		return nil, fmt.Errorf("error: get resource with unknown resource type %s", resourceType)
+		return nil, status.Errorf(codes.Unimplemented, "error: get resource with unknown resource type %s", resourceType)
 	}
 
 	resource, annos, err := rb.Get(ctx, request.GetResourceId(), request.GetParentResourceId())
@@ -863,8 +953,8 @@ func getCapabilities(ctx context.Context, b *builderImpl) (*v2.ConnectorCapabili
 		return resourceTypeCapabilities[i].ResourceType.GetId() < resourceTypeCapabilities[j].ResourceType.GetId()
 	})
 
-	if b.eventFeed != nil {
-		connectorCaps[v2.Capability_CAPABILITY_EVENT_FEED] = struct{}{}
+	if len(b.eventFeeds) > 0 {
+		connectorCaps[v2.Capability_CAPABILITY_EVENT_FEED_V2] = struct{}{}
 	}
 
 	if b.ticketManager != nil {
@@ -898,12 +988,24 @@ func (b *builderImpl) Validate(ctx context.Context, request *v2.ConnectorService
 	ctx, span := tracer.Start(ctx, "builderImpl.Validate")
 	defer span.End()
 
-	annos, err := b.cb.Validate(ctx)
-	if err != nil {
-		return nil, err
-	}
+	retryer := retry.NewRetryer(ctx, retry.RetryConfig{
+		MaxAttempts:  5,
+		InitialDelay: 1 * time.Second,
+		MaxDelay:     0,
+	})
 
-	return &v2.ConnectorServiceValidateResponse{Annotations: annos}, nil
+	for {
+		annos, err := b.cb.Validate(ctx)
+		if err == nil {
+			return &v2.ConnectorServiceValidateResponse{Annotations: annos}, nil
+		}
+
+		if retryer.ShouldWaitAndRetry(ctx, err) {
+			continue
+		}
+
+		return nil, fmt.Errorf("validate failed: %w", err)
+	}
 }
 
 func (b *builderImpl) Grant(ctx context.Context, request *v2.GrantManagerServiceGrantRequest) (*v2.GrantManagerServiceGrantResponse, error) {
@@ -915,35 +1017,47 @@ func (b *builderImpl) Grant(ctx context.Context, request *v2.GrantManagerService
 	l := ctxzap.Extract(ctx)
 
 	rt := request.Entitlement.Resource.Id.ResourceType
+
+	retryer := retry.NewRetryer(ctx, retry.RetryConfig{
+		MaxAttempts:  3,
+		InitialDelay: 15 * time.Second,
+		MaxDelay:     60 * time.Second,
+	})
+
+	var grantFunc func(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error)
 	provisioner, ok := b.resourceProvisioners[rt]
 	if ok {
-		annos, err := provisioner.Grant(ctx, request.Principal, request.Entitlement)
-		if err != nil {
-			l.Error("error: grant failed", zap.Error(err))
-			b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start))
-			return nil, fmt.Errorf("error: grant failed: %w", err)
+		grantFunc = func(ctx context.Context, principal *v2.Resource, entitlement *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
+			annos, err := provisioner.Grant(ctx, principal, entitlement)
+			if err != nil {
+				return nil, annos, err
+			}
+			return nil, annos, nil
 		}
-
-		b.m.RecordTaskSuccess(ctx, tt, b.nowFunc().Sub(start))
-		return &v2.GrantManagerServiceGrantResponse{Annotations: annos}, nil
 	}
-
 	provisionerV2, ok := b.resourceProvisionersV2[rt]
 	if ok {
-		grants, annos, err := provisionerV2.Grant(ctx, request.Principal, request.Entitlement)
-		if err != nil {
-			l.Error("error: grant failed", zap.Error(err))
-			b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start))
-			return nil, fmt.Errorf("error: grant failed: %w", err)
-		}
-
-		b.m.RecordTaskSuccess(ctx, tt, b.nowFunc().Sub(start))
-		return &v2.GrantManagerServiceGrantResponse{Annotations: annos, Grants: grants}, nil
+		grantFunc = provisionerV2.Grant
 	}
 
-	l.Error("error: resource type does not have provisioner configured", zap.String("resource_type", rt))
-	b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start))
-	return nil, fmt.Errorf("error: resource type does not have provisioner configured")
+	if grantFunc == nil {
+		l.Error("error: resource type does not have provisioner configured", zap.String("resource_type", rt))
+		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start))
+		return nil, fmt.Errorf("error: resource type does not have provisioner configured")
+	}
+
+	for {
+		grants, annos, err := grantFunc(ctx, request.Principal, request.Entitlement)
+		if err == nil {
+			b.m.RecordTaskSuccess(ctx, tt, b.nowFunc().Sub(start))
+			return &v2.GrantManagerServiceGrantResponse{Annotations: annos, Grants: grants}, nil
+		}
+		if retryer.ShouldWaitAndRetry(ctx, err) {
+			continue
+		}
+		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start))
+		return nil, fmt.Errorf("grant failed: %w", err)
+	}
 }
 
 func (b *builderImpl) Revoke(ctx context.Context, request *v2.GrantManagerServiceRevokeRequest) (*v2.GrantManagerServiceRevokeResponse, error) {
@@ -956,33 +1070,41 @@ func (b *builderImpl) Revoke(ctx context.Context, request *v2.GrantManagerServic
 	l := ctxzap.Extract(ctx)
 
 	rt := request.Grant.Entitlement.Resource.Id.ResourceType
+
+	retryer := retry.NewRetryer(ctx, retry.RetryConfig{
+		MaxAttempts:  3,
+		InitialDelay: 15 * time.Second,
+		MaxDelay:     60 * time.Second,
+	})
+
+	var revokeFunc func(ctx context.Context, grant *v2.Grant) (annotations.Annotations, error)
 	provisioner, ok := b.resourceProvisioners[rt]
 	if ok {
-		annos, err := provisioner.Revoke(ctx, request.Grant)
-		if err != nil {
-			l.Error("error: revoke failed", zap.Error(err))
-			b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start))
-			return nil, fmt.Errorf("error: revoke failed: %w", err)
-		}
-		return &v2.GrantManagerServiceRevokeResponse{Annotations: annos}, nil
+		revokeFunc = provisioner.Revoke
 	}
-
 	provisionerV2, ok := b.resourceProvisionersV2[rt]
 	if ok {
-		annos, err := provisionerV2.Revoke(ctx, request.Grant)
-		if err != nil {
-			l.Error("error: revoke failed", zap.Error(err))
-			b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start))
-			return nil, fmt.Errorf("error: revoke failed: %w", err)
-		}
-
-		b.m.RecordTaskSuccess(ctx, tt, b.nowFunc().Sub(start))
-		return &v2.GrantManagerServiceRevokeResponse{Annotations: annos}, nil
+		revokeFunc = provisionerV2.Revoke
 	}
 
-	l.Error("error: resource type does not have provisioner configured", zap.String("resource_type", rt))
-	b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start))
-	return nil, status.Error(codes.Unimplemented, "resource type does not have provisioner configured")
+	if revokeFunc == nil {
+		l.Error("error: resource type does not have provisioner configured", zap.String("resource_type", rt))
+		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start))
+		return nil, fmt.Errorf("error: resource type does not have provisioner configured")
+	}
+
+	for {
+		annos, err := revokeFunc(ctx, request.Grant)
+		if err == nil {
+			b.m.RecordTaskSuccess(ctx, tt, b.nowFunc().Sub(start))
+			return &v2.GrantManagerServiceRevokeResponse{Annotations: annos}, nil
+		}
+		if retryer.ShouldWaitAndRetry(ctx, err) {
+			continue
+		}
+		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start))
+		return nil, fmt.Errorf("revoke failed: %w", err)
+	}
 }
 
 // GetAsset streams the asset to the client.
@@ -994,17 +1116,44 @@ func (b *builderImpl) GetAsset(request *v2.AssetServiceGetAssetRequest, server v
 	return nil
 }
 
+func (b *builderImpl) ListEventFeeds(ctx context.Context, request *v2.ListEventFeedsRequest) (*v2.ListEventFeedsResponse, error) {
+	ctx, span := tracer.Start(ctx, "builderImpl.ListEventFeeds")
+	defer span.End()
+
+	start := b.nowFunc()
+	tt := tasks.ListEventFeedsType
+
+	feeds := make([]*v2.EventFeedMetadata, 0, len(b.eventFeeds))
+
+	for _, feed := range b.eventFeeds {
+		feeds = append(feeds, feed.EventFeedMetadata(ctx))
+	}
+
+	b.m.RecordTaskSuccess(ctx, tt, b.nowFunc().Sub(start))
+	return &v2.ListEventFeedsResponse{
+		List: feeds,
+	}, nil
+}
+
 func (b *builderImpl) ListEvents(ctx context.Context, request *v2.ListEventsRequest) (*v2.ListEventsResponse, error) {
 	ctx, span := tracer.Start(ctx, "builderImpl.ListEvents")
 	defer span.End()
 
 	start := b.nowFunc()
-	tt := tasks.ListEventsType
-	if b.eventFeed == nil {
-		b.m.RecordTaskFailure(ctx, tt, b.nowFunc().Sub(start))
-		return nil, fmt.Errorf("error: event feed not implemented")
+	feedId := request.GetEventFeedId()
+
+	// If no feedId is provided, use the legacy Baton feed Id
+	if feedId == "" {
+		feedId = LegacyBatonFeedId
 	}
-	events, streamState, annotations, err := b.eventFeed.ListEvents(ctx, request.StartAt, &pagination.StreamToken{
+
+	feed, ok := b.eventFeeds[feedId]
+	if !ok {
+		return nil, status.Errorf(codes.NotFound, "error: event feed not found")
+	}
+
+	tt := tasks.ListEventsType
+	events, streamState, annotations, err := feed.ListEvents(ctx, request.StartAt, &pagination.StreamToken{
 		Size:   int(request.PageSize),
 		Cursor: request.Cursor,
 	})

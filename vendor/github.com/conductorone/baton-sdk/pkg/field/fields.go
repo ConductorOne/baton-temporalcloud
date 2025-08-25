@@ -8,7 +8,7 @@ import (
 	v1_conf "github.com/conductorone/baton-sdk/pb/c1/config/v1"
 )
 
-var WrongValueTypeErr = errors.New("unable to cast any to concrete type")
+var ErrWrongValueType = errors.New("unable to cast any to concrete type")
 
 type Variant string
 
@@ -72,6 +72,8 @@ type SchemaField struct {
 
 	// Config acutally ingested on the connector side - auth, regions, etc
 	ConnectorConfig connectorConfig
+
+	WasReExported bool
 }
 
 type SchemaTypes interface {
@@ -109,6 +111,13 @@ func (s SchemaField) GetDescription() string {
 	return line
 }
 
+func (s SchemaField) ExportAs(et ExportTarget) SchemaField {
+	c := s
+	c.ExportTarget = et
+	c.WasReExported = true
+	return c
+}
+
 // Go doesn't allow generic methods on a non-generic struct.
 func ValidateField[T SchemaTypes](s *SchemaField, value T) (bool, error) {
 	return s.validate(value)
@@ -119,31 +128,31 @@ func (s SchemaField) validate(value any) (bool, error) {
 	case StringVariant:
 		v, ok := value.(string)
 		if !ok {
-			return false, WrongValueTypeErr
+			return false, ErrWrongValueType
 		}
 		return v != "", ValidateStringRules(s.Rules.s, v, s.FieldName)
 	case BoolVariant:
 		v, ok := value.(bool)
 		if !ok {
-			return false, WrongValueTypeErr
+			return false, ErrWrongValueType
 		}
 		return v, ValidateBoolRules(s.Rules.b, v, s.FieldName)
 	case IntVariant:
 		v, ok := value.(int)
 		if !ok {
-			return false, WrongValueTypeErr
+			return false, ErrWrongValueType
 		}
 		return v != 0, ValidateIntRules(s.Rules.i, v, s.FieldName)
 	case StringSliceVariant:
 		v, ok := value.([]string)
 		if !ok {
-			return false, WrongValueTypeErr
+			return false, ErrWrongValueType
 		}
 		return len(v) != 0, ValidateRepeatedStringRules(s.Rules.ss, v, s.FieldName)
 	case StringMapVariant:
 		v, ok := value.(map[string]any)
 		if !ok {
-			return false, WrongValueTypeErr
+			return false, ErrWrongValueType
 		}
 		return len(v) != 0, ValidateStringMapRules(s.Rules.sm, v, s.FieldName)
 	default:
@@ -159,7 +168,7 @@ func toUpperCase(i string) string {
 func GetDefaultValue[T SchemaTypes](s SchemaField) (*T, error) {
 	value, ok := s.DefaultValue.(T)
 	if !ok {
-		return nil, WrongValueTypeErr
+		return nil, ErrWrongValueType
 	}
 	return &value, nil
 }
