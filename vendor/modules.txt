@@ -156,8 +156,8 @@ github.com/benbjohnson/clock
 # github.com/cenkalti/backoff/v4 v4.3.0
 ## explicit; go 1.18
 github.com/cenkalti/backoff/v4
-# github.com/conductorone/baton-sdk v0.3.2
-## explicit; go 1.23.4
+# github.com/conductorone/baton-sdk v0.3.54
+## explicit; go 1.25
 github.com/conductorone/baton-sdk/internal/connector
 github.com/conductorone/baton-sdk/pb/c1/c1z/v1
 github.com/conductorone/baton-sdk/pb/c1/config/v1
@@ -192,9 +192,14 @@ github.com/conductorone/baton-sdk/pkg/metrics
 github.com/conductorone/baton-sdk/pkg/pagination
 github.com/conductorone/baton-sdk/pkg/provisioner
 github.com/conductorone/baton-sdk/pkg/ratelimit
+github.com/conductorone/baton-sdk/pkg/retry
 github.com/conductorone/baton-sdk/pkg/sdk
 github.com/conductorone/baton-sdk/pkg/sync
 github.com/conductorone/baton-sdk/pkg/sync/expand
+github.com/conductorone/baton-sdk/pkg/sync/expand/scc
+github.com/conductorone/baton-sdk/pkg/synccompactor
+github.com/conductorone/baton-sdk/pkg/synccompactor/attached
+github.com/conductorone/baton-sdk/pkg/synccompactor/naive
 github.com/conductorone/baton-sdk/pkg/tasks
 github.com/conductorone/baton-sdk/pkg/tasks/c1api
 github.com/conductorone/baton-sdk/pkg/tasks/local
@@ -598,6 +603,7 @@ golang.org/x/sync/singleflight
 # golang.org/x/sys v0.33.0
 ## explicit; go 1.23.0
 golang.org/x/sys/cpu
+golang.org/x/sys/plan9
 golang.org/x/sys/unix
 golang.org/x/sys/windows
 golang.org/x/sys/windows/registry
@@ -605,6 +611,9 @@ golang.org/x/sys/windows/svc
 golang.org/x/sys/windows/svc/debug
 golang.org/x/sys/windows/svc/eventlog
 golang.org/x/sys/windows/svc/mgr
+# golang.org/x/term v0.32.0
+## explicit; go 1.23.0
+golang.org/x/term
 # golang.org/x/text v0.25.0
 ## explicit; go 1.23.0
 golang.org/x/text/cases
