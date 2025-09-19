@@ -96,7 +96,7 @@ func (o *userBuilder) CreateAccountCapabilityDetails(_ context.Context) (*v2.Cre
 func (o *userBuilder) CreateAccount(
 	ctx context.Context,
 	accountInfo *v2.AccountInfo,
-	credentialOptions *v2.CredentialOptions,
+	credentialOptions *v2.LocalCredentialOptions,
 ) (connectorbuilder.CreateAccountResponse, []*v2.PlaintextData, annotations.Annotations, error) {
 	l := ctxzap.Extract(ctx)
 	profile := accountInfo.Profile.AsMap()
