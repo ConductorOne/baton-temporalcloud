@@ -3,7 +3,7 @@ module github.com/conductorone/baton-temporalcloud
 go 1.25
 
 require (
-	github.com/conductorone/baton-sdk v0.4.1
+	github.com/conductorone/baton-sdk v0.4.5
 	github.com/ennyjfrick/ruleguard-logfatal v0.0.1
 	github.com/fatih/camelcase v1.0.0
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
@@ -20,6 +20,7 @@ require (
 require (
 	filippo.io/age v1.2.1 // indirect
 	filippo.io/edwards25519 v1.1.0 // indirect
+	github.com/Masterminds/semver/v3 v3.4.0 // indirect
 	github.com/aws/aws-lambda-go v1.48.0 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.36.3 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.6.10 // indirect
