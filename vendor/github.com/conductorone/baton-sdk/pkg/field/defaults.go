@@ -90,6 +90,16 @@ var (
 		WithPersistent(true),
 		WithExportTarget(ExportTargetNone),
 	)
+	skipGrants = BoolField("skip-grants",
+		WithDescription("This must be set to skip syncing of grants only (entitlements will still be synced)"),
+		WithPersistent(true),
+		WithExportTarget(ExportTargetNone),
+		WithHidden(true),
+	)
+	syncResourceTypeIDs = StringSliceField("sync-resource-types",
+		WithDescription("The resource type IDs to sync"),
+		WithPersistent(true),
+		WithExportTarget(ExportTargetNone))
 	diffSyncsField = BoolField(
 		"diff-syncs",
 		WithDescription("Create a new partial SyncID from a base and applied sync."),
@@ -257,7 +267,9 @@ var DefaultFields = []SchemaField{
 	logLevelDebugExpiresAtField,
 	skipFullSync,
 	targetedSyncResourceIDs,
+	syncResourceTypeIDs,
 	skipEntitlementsAndGrants,
+	skipGrants,
 	externalResourceC1ZField,
 	externalResourceEntitlementIdFilter,
 	diffSyncsField,
