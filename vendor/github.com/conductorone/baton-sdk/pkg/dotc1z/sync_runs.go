@@ -359,6 +359,10 @@ func (c *C1File) CheckpointSync(ctx context.Context, syncToken string) error {
 	ctx, span := tracer.Start(ctx, "C1File.CheckpointSync")
 	defer span.End()
 
+	if c.readOnly {
+		return ErrReadOnly
+	}
+
 	err := c.validateSyncDb(ctx)
 	if err != nil {
 		return err
@@ -468,6 +472,12 @@ func (c *C1File) StartOrResumeSync(ctx context.Context, syncType connectorstore.
 	return c.currentSyncID, true, nil
 }
 
+// SetSyncID sets the current sync ID. This is only intended for testing.
+func (c *C1File) SetSyncID(_ context.Context, syncID string) error {
+	c.currentSyncID = syncID
+	return nil
+}
+
 func (c *C1File) StartNewSync(ctx context.Context, syncType connectorstore.SyncType, parentSyncID string) (string, error) {
 	ctx, span := tracer.Start(ctx, "C1File.StartNewSync")
 	defer span.End()
@@ -511,6 +521,10 @@ func (c *C1File) StartNewSync(ctx context.Context, syncType connectorstore.SyncT
 }
 
 func (c *C1File) insertSyncRun(ctx context.Context, syncID string, syncType connectorstore.SyncType, parentSyncID string) error {
+	if c.readOnly {
+		return ErrReadOnly
+	}
+
 	q := c.db.Insert(syncRuns.Name())
 	q = q.Rows(goqu.Record{
 		"sync_id":        syncID,
@@ -672,10 +686,12 @@ func (c *C1File) Cleanup(ctx context.Context) error {
 		}
 	}
 
+	l.Debug("vacuuming database")
 	err = c.Vacuum(ctx)
 	if err != nil {
 		return err
 	}
+	l.Debug("vacuum complete")
 
 	c.dbUpdated = true
 
@@ -747,73 +763,73 @@ func (c *C1File) GetSync(ctx context.Context, request *reader_v2.SyncsReaderServ
 	ctx, span := tracer.Start(ctx, "C1File.GetSync")
 	defer span.End()
 
-	sr, err := c.getSync(ctx, request.SyncId)
+	sr, err := c.getSync(ctx, request.GetSyncId())
 	if err != nil {
-		return nil, fmt.Errorf("error getting sync '%s': %w", request.SyncId, err)
+		return nil, fmt.Errorf("error getting sync '%s': %w", request.GetSyncId(), err)
 	}
 
-	return &reader_v2.SyncsReaderServiceGetSyncResponse{
-		Sync: &reader_v2.SyncRun{
+	return reader_v2.SyncsReaderServiceGetSyncResponse_builder{
+		Sync: reader_v2.SyncRun_builder{
 			Id:           sr.ID,
 			StartedAt:    toTimeStamp(sr.StartedAt),
 			EndedAt:      toTimeStamp(sr.EndedAt),
 			SyncToken:    sr.SyncToken,
 			SyncType:     string(sr.Type),
 			ParentSyncId: sr.ParentSyncID,
-		},
-	}, nil
+		}.Build(),
+	}.Build(), nil
 }
 
 func (c *C1File) ListSyncs(ctx context.Context, request *reader_v2.SyncsReaderServiceListSyncsRequest) (*reader_v2.SyncsReaderServiceListSyncsResponse, error) {
 	ctx, span := tracer.Start(ctx, "C1File.ListSyncs")
 	defer span.End()
 
-	syncs, nextPageToken, err := c.ListSyncRuns(ctx, request.PageToken, request.PageSize)
+	syncs, nextPageToken, err := c.ListSyncRuns(ctx, request.GetPageToken(), request.GetPageSize())
 	if err != nil {
 		return nil, fmt.Errorf("error listing syncs: %w", err)
 	}
 
 	syncRuns := make([]*reader_v2.SyncRun, len(syncs))
 	for i, sr := range syncs {
-		syncRuns[i] = &reader_v2.SyncRun{
+		syncRuns[i] = reader_v2.SyncRun_builder{
 			Id:           sr.ID,
 			StartedAt:    toTimeStamp(sr.StartedAt),
 			EndedAt:      toTimeStamp(sr.EndedAt),
 			SyncToken:    sr.SyncToken,
 			SyncType:     string(sr.Type),
 			ParentSyncId: sr.ParentSyncID,
-		}
+		}.Build()
 	}
 
-	return &reader_v2.SyncsReaderServiceListSyncsResponse{
+	return reader_v2.SyncsReaderServiceListSyncsResponse_builder{
 		Syncs:         syncRuns,
 		NextPageToken: nextPageToken,
-	}, nil
+	}.Build(), nil
 }
 
 func (c *C1File) GetLatestFinishedSync(ctx context.Context, request *reader_v2.SyncsReaderServiceGetLatestFinishedSyncRequest) (*reader_v2.SyncsReaderServiceGetLatestFinishedSyncResponse, error) {
 	ctx, span := tracer.Start(ctx, "C1File.GetLatestFinishedSync")
 	defer span.End()
 
-	sync, err := c.getFinishedSync(ctx, 0, connectorstore.SyncType(request.SyncType))
+	sync, err := c.getFinishedSync(ctx, 0, connectorstore.SyncType(request.GetSyncType()))
 	if err != nil {
 		return nil, fmt.Errorf("error fetching latest finished sync: %w", err)
 	}
 
 	if sync == nil {
-		return &reader_v2.SyncsReaderServiceGetLatestFinishedSyncResponse{
+		return reader_v2.SyncsReaderServiceGetLatestFinishedSyncResponse_builder{
 			Sync: nil,
-		}, nil
+		}.Build(), nil
 	}
 
-	return &reader_v2.SyncsReaderServiceGetLatestFinishedSyncResponse{
-		Sync: &reader_v2.SyncRun{
+	return reader_v2.SyncsReaderServiceGetLatestFinishedSyncResponse_builder{
+		Sync: reader_v2.SyncRun_builder{
 			Id:           sync.ID,
 			StartedAt:    toTimeStamp(sync.StartedAt),
 			EndedAt:      toTimeStamp(sync.EndedAt),
 			SyncToken:    sync.SyncToken,
 			SyncType:     string(sync.Type),
 			ParentSyncId: sync.ParentSyncID,
-		},
-	}, nil
+		}.Build(),
+	}.Build(), nil
 }

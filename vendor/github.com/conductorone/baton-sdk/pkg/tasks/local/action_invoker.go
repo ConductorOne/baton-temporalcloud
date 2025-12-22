@@ -36,14 +36,12 @@ func (m *localActionInvoker) ShouldDebug() bool {
 func (m *localActionInvoker) Next(ctx context.Context) (*v1.Task, time.Duration, error) {
 	var task *v1.Task
 	m.o.Do(func() {
-		task = &v1.Task{
-			TaskType: &v1.Task_ActionInvoke{
-				ActionInvoke: &v1.Task_ActionInvokeTask{
-					Name: m.action,
-					Args: m.args,
-				},
-			},
-		}
+		task = v1.Task_builder{
+			ActionInvoke: v1.Task_ActionInvokeTask_builder{
+				Name: m.action,
+				Args: m.args,
+			}.Build(),
+		}.Build()
 	})
 	return task, 0, nil
 }
@@ -54,19 +52,41 @@ func (m *localActionInvoker) Process(ctx context.Context, task *v1.Task, cc type
 	defer span.End()
 
 	t := task.GetActionInvoke()
-	resp, err := cc.InvokeAction(ctx, &v2.InvokeActionRequest{
+	resp, err := cc.InvokeAction(ctx, v2.InvokeActionRequest_builder{
 		Name:        t.GetName(),
 		Args:        t.GetArgs(),
 		Annotations: t.GetAnnotations(),
-	})
+	}.Build())
 	if err != nil {
 		return err
 	}
 
-	l.Info("ActionInvoke response", zap.Any("resp", resp))
+	status := resp.GetStatus()
+	finalResp := resp.GetResponse()
 
-	if resp.GetStatus() == v2.BatonActionStatus_BATON_ACTION_STATUS_FAILED {
-		return fmt.Errorf("action invoke failed: %v", resp.GetResponse())
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for status == v2.BatonActionStatus_BATON_ACTION_STATUS_PENDING || status == v2.BatonActionStatus_BATON_ACTION_STATUS_RUNNING {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			r, err := cc.GetActionStatus(ctx, &v2.GetActionStatusRequest{
+				Id: resp.GetId(),
+			})
+			if err != nil {
+				return fmt.Errorf("failed to poll action status: %w", err)
+			}
+			status = r.GetStatus()
+			finalResp = r.GetResponse()
+		}
+	}
+
+	l.Info("ActionInvoke response", zap.Any("resp", finalResp))
+
+	if status == v2.BatonActionStatus_BATON_ACTION_STATUS_FAILED {
+		return fmt.Errorf("action invoke failed: %v", finalResp)
 	}
 
 	return nil
