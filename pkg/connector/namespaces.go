@@ -216,19 +216,47 @@ func (o *namespaceBuilder) Revoke(ctx context.Context, g *v2.Grant) (annotations
 	namespaceID := namespace.GetId().GetResource()
 	namespaceType := namespace.GetId().GetResourceType()
 
+	// Parse the permission level being revoked from the entitlement ID
+	enIDParts := strings.Split(entitlementID, ":")
+	if len(enIDParts) != 3 {
+		return nil, fmt.Errorf("baton-temporalcloud: invalid entitlement ID %s", entitlementID)
+	}
+	revokedPermStr := enIDParts[2]
+	revokedPerm := namespaceAccessPermissionFromString(revokedPermStr)
+	if revokedPerm == identityv1.NamespaceAccess_PERMISSION_UNSPECIFIED {
+		return nil, fmt.Errorf("baton-temporalcloud: invalid namespace permission %s", revokedPermStr)
+	}
+
 	userResp, err := o.client.GetUser(ctx, &cloudservicev1.GetUserRequest{UserId: userID})
 	if err != nil {
 		return nil, fmt.Errorf("baton-temporalcloud: couldn't retrieve user: %w", err)
 	}
 	user := userResp.GetUser()
 	spec := user.GetSpec()
-	_, ok := spec.GetAccess().GetNamespaceAccesses()[namespaceID]
+	currentAccess, ok := spec.GetAccess().GetNamespaceAccesses()[namespaceID]
 	if !ok {
 		annos := annotations.New(&v2.GrantAlreadyRevoked{})
 		return annos, fmt.Errorf("baton-temporalcloud: grant does not exist for user")
 	}
 
-	delete(spec.Access.NamespaceAccesses, namespaceID)
+	// Only revoke if the user actually has the permission being revoked.
+	// If they have a different permission level, this grant doesn't exist.
+	if currentAccess.GetPermission() != revokedPerm {
+		annos := annotations.New(&v2.GrantAlreadyRevoked{})
+		return annos, fmt.Errorf("baton-temporalcloud: user does not have %s permission on namespace", revokedPermStr)
+	}
+
+	// Determine the next lower permission level (hierarchical downgrade).
+	// Admin → Write, Write → Read, Read → remove entirely.
+	nextPerm := nextLowerNamespacePermission(revokedPerm)
+	if nextPerm == identityv1.NamespaceAccess_PERMISSION_UNSPECIFIED {
+		// Read permission: remove access entirely
+		delete(spec.Access.NamespaceAccesses, namespaceID)
+	} else {
+		// Downgrade to the next lower permission level
+		spec.Access.NamespaceAccesses[namespaceID] = &identityv1.NamespaceAccess{Permission: nextPerm}
+	}
+
 	req := &cloudservicev1.UpdateUserRequest{UserId: userID, Spec: spec, ResourceVersion: user.GetResourceVersion()}
 	resp, err := o.client.UpdateUser(ctx, req)
 	if err != nil {
@@ -249,7 +277,7 @@ func (o *namespaceBuilder) Revoke(ctx context.Context, g *v2.Grant) (annotations
 	defer cancel()
 	err = awaitAsyncOperation(waitCtx, l, o.client, requestID, retryDelay)
 	if err != nil {
-		return nil, fmt.Errorf("baton-temporalcloud: namespace assignment deletion failed: %w", err)
+		return nil, fmt.Errorf("baton-temporalcloud: namespace assignment update failed: %w", err)
 	}
 
 	annos := annotations.New()
