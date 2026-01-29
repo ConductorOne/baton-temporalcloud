@@ -5,76 +5,57 @@ import (
 	"fmt"
 	"os"
 
-	configSchema "github.com/conductorone/baton-sdk/pkg/config"
+	"github.com/conductorone/baton-sdk/pkg/config"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
-	"github.com/conductorone/baton-sdk/pkg/field"
+	"github.com/conductorone/baton-sdk/pkg/connectorrunner"
 	"github.com/conductorone/baton-sdk/pkg/types"
-	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
-	"github.com/spf13/viper"
-	"go.uber.org/zap"
-
+	cfg "github.com/conductorone/baton-temporalcloud/pkg/config"
 	"github.com/conductorone/baton-temporalcloud/pkg/connector"
+	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"go.uber.org/zap"
 )
 
-var defaultAccountRoleOpts = []string{"read", "developer", "admin"}
-
-const (
-	version            = "dev"
-	connectorName      = "baton-temporalcloud"
-	apiKey             = "api-key"
-	allowInsecure      = "allow-insecure"
-	defaultAccountRole = "default-account-role"
-)
-
-var (
-	APIKeyField        = field.StringField(apiKey, field.WithRequired(true), field.WithDescription("The Temporal Cloud API key used to connect to the Temporal Cloud API."))
-	AllowInsecureField = field.BoolField(
-		allowInsecure,
-		field.WithDefaultValue(false),
-		field.WithDescription("Allow insecure TLS connections to the Temporal Cloud API."),
-	)
-	DefaultAccountRoleField = field.StringField(
-		defaultAccountRole,
-		field.WithRequired(false),
-		field.WithDescription(fmt.Sprintf("The default account role to use for account provisioning, must be one of %v", defaultAccountRoleOpts)),
-		field.WithDefaultValue("read"),
-		field.WithString(func(r *field.StringRuler) {
-			r.In(defaultAccountRoleOpts)
-		}),
-	)
-	configurationFields = []field.SchemaField{APIKeyField, AllowInsecureField, DefaultAccountRoleField}
-)
+var version = "dev"
 
 func main() {
 	ctx := context.Background()
-	_, cmd, err := configSchema.DefineConfiguration(ctx,
-		connectorName,
+
+	_, cmd, err := config.DefineConfiguration(
+		ctx,
+		"baton-temporalcloud",
 		getConnector,
-		field.NewConfiguration(configurationFields),
+		cfg.Config,
+		connectorrunner.WithDefaultCapabilitiesConnectorBuilder(&connector.Connector{}),
 	)
 	if err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err.Error())
+		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
 	}
 
 	cmd.Version = version
+
 	err = cmd.Execute()
 	if err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err.Error())
+		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)
 	}
 }
 
-func getConnector(ctx context.Context, cfg *viper.Viper) (types.ConnectorServer, error) {
+func getConnector(ctx context.Context, tc *cfg.TemporalCloud) (types.ConnectorServer, error) {
 	l := ctxzap.Extract(ctx)
+
+	if err := cfg.ValidateConfig(tc); err != nil {
+		return nil, err
+	}
+
 	var opts []connector.Opt
-	if cfg.IsSet(defaultAccountRole) && cfg.GetString(defaultAccountRole) != "" {
-		opts = append(opts, connector.WithDefaultAccountRole(cfg.GetString(defaultAccountRole)))
+	if tc.DefaultAccountRole != "" {
+		opts = append(opts, connector.WithDefaultAccountRole(tc.DefaultAccountRole))
 	}
 
 	cb, err := connector.New(ctx,
-		cfg.GetString(apiKey),
-		cfg.GetBool(allowInsecure),
+		tc.ApiKey,
+		tc.AllowInsecure,
 		opts...,
 	)
 	if err != nil {

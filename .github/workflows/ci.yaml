@@ -21,6 +21,13 @@ jobs:
         with:
           version: latest
           args: --timeout=3m
+      - name: Check Config
+        run: |
+          make generate
+          if ! git diff --exit-code pkg/config/conf.gen.go; then
+            echo "pkg/config/conf.gen.go is out of sync. Please run 'make generate' and commit the changes."
+            exit 1
+          fi
   go-test:
     strategy:
       matrix:
