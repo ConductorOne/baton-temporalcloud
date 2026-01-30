@@ -9,19 +9,23 @@ import (
 var (
 	APIKeyField = field.StringField(
 		"api-key",
-		field.WithRequired(true),
+		field.WithDisplayName("API Key"),
 		field.WithDescription("The Temporal Cloud API key used to connect to the Temporal Cloud API."),
+		field.WithIsSecret(true),
+		field.WithRequired(true),
 	)
 	AllowInsecureField = field.BoolField(
 		"allow-insecure",
-		field.WithDefaultValue(false),
+		field.WithDisplayName("Allow Insecure"),
 		field.WithDescription("Allow insecure TLS connections to the Temporal Cloud API."),
+		field.WithDefaultValue(false),
 	)
 	DefaultAccountRoleField = field.StringField(
 		"default-account-role",
-		field.WithRequired(false),
+		field.WithDisplayName("Default Account Role"),
 		field.WithDescription("The default account role to use for account provisioning, must be one of [read, developer, admin]"),
 		field.WithDefaultValue("read"),
+		field.WithRequired(false),
 		field.WithString(func(r *field.StringRuler) {
 			r.In([]string{"read", "developer", "admin"})
 		}),
@@ -35,10 +39,18 @@ var (
 		DefaultAccountRoleField,
 	}
 
+	// FieldRelationships defines relationships between the fields listed in
+	// ConfigurationFields that can be automatically validated.
+	FieldRelationships = []field.SchemaFieldRelationship{}
+
 	// Config is the configuration schema for the connector.
-	Config = field.Configuration{
-		Fields: ConfigurationFields,
-	}
+	Config = field.NewConfiguration(
+		ConfigurationFields,
+		field.WithConstraints(FieldRelationships...),
+		field.WithConnectorDisplayName("Temporal Cloud"),
+		field.WithHelpUrl("/docs/baton/temporalcloud"),
+		field.WithIconUrl("/static/app-icons/temporalcloud.svg"),
+	)
 )
 
 // ValidateConfig is run after the configuration is loaded, and should return an
