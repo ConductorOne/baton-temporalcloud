@@ -44,10 +44,6 @@ func main() {
 func getConnector(ctx context.Context, tc *cfg.TemporalCloud) (types.ConnectorServer, error) {
 	l := ctxzap.Extract(ctx)
 
-	if err := cfg.ValidateConfig(tc); err != nil {
-		return nil, err
-	}
-
 	var opts []connector.Opt
 	if tc.DefaultAccountRole != "" {
 		opts = append(opts, connector.WithDefaultAccountRole(tc.DefaultAccountRole))
