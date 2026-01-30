@@ -22,15 +22,11 @@ var (
 	)
 	DefaultAccountRoleField = field.SelectField(
 		"default-account-role",
+		[]string{"read", "developer", "admin"},
 		field.WithDisplayName("Default Account Role"),
 		field.WithDescription("The default account role to use for account provisioning"),
 		field.WithDefaultValue("read"),
 		field.WithRequired(false),
-		field.WithSelectOptions(
-			field.SelectOption{Label: "Read", Value: "read"},
-			field.SelectOption{Label: "Developer", Value: "developer"},
-			field.SelectOption{Label: "Admin", Value: "admin"},
-		),
 	)
 
 	// ConfigurationFields defines the external configuration required for the
