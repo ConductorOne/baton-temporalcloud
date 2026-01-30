@@ -20,15 +20,17 @@ var (
 		field.WithDescription("Allow insecure TLS connections to the Temporal Cloud API."),
 		field.WithDefaultValue(false),
 	)
-	DefaultAccountRoleField = field.StringField(
+	DefaultAccountRoleField = field.SelectField(
 		"default-account-role",
 		field.WithDisplayName("Default Account Role"),
-		field.WithDescription("The default account role to use for account provisioning, must be one of [read, developer, admin]"),
+		field.WithDescription("The default account role to use for account provisioning"),
 		field.WithDefaultValue("read"),
 		field.WithRequired(false),
-		field.WithString(func(r *field.StringRuler) {
-			r.In([]string{"read", "developer", "admin"})
-		}),
+		field.WithSelectOptions(
+			field.SelectOption{Label: "Read", Value: "read"},
+			field.SelectOption{Label: "Developer", Value: "developer"},
+			field.SelectOption{Label: "Admin", Value: "admin"},
+		),
 	)
 
 	// ConfigurationFields defines the external configuration required for the
