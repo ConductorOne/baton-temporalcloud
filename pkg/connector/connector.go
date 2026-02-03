@@ -8,10 +8,12 @@ import (
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
+	"github.com/conductorone/baton-sdk/pkg/cli"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
 	identityv1 "go.temporal.io/cloud-sdk/api/identity/v1"
 
 	"github.com/conductorone/baton-temporalcloud/pkg/client"
+	cfg "github.com/conductorone/baton-temporalcloud/pkg/config"
 )
 
 type Connector struct {
@@ -23,8 +25,8 @@ type Connector struct {
 }
 
 // ResourceSyncers returns a ResourceSyncer for each resource type that should be synced from the upstream service.
-func (d *Connector) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncer {
-	return []connectorbuilder.ResourceSyncer{
+func (d *Connector) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncerV2 {
+	return []connectorbuilder.ResourceSyncerV2{
 		newUserBuilder(d.cloudServiceClient, d.accountCreationSettings),
 		newNamespaceBuilder(d.cloudServiceClient),
 		newAccountBuilder(d.cloudServiceClient),
@@ -80,31 +82,34 @@ func (d *Connector) Validate(ctx context.Context) (annotations.Annotations, erro
 }
 
 // New returns a new instance of the connector.
-func New(ctx context.Context, apiKey string, allowInsecure bool, opts ...Opt) (*Connector, error) {
+func New(ctx context.Context, tc *cfg.TemporalCloud, opts *cli.ConnectorOpts) (connectorbuilder.ConnectorBuilderV2, []connectorbuilder.Opt, error) {
 	var clientOpts []client.Opt
-	if allowInsecure {
+	if tc.AllowInsecure {
 		clientOpts = append(clientOpts, client.AllowInsecure())
 	}
 
-	c, err := client.New(apiKey, clientOpts...)
+	c, err := client.New(tc.ApiKey, clientOpts...)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	tc := &Connector{
+	defaultRole := identityv1.AccountAccess_ROLE_READ
+	if tc.DefaultAccountRole != "" {
+		r, err := AccountAccessRoleFromString(tc.DefaultAccountRole)
+		if err != nil {
+			return nil, nil, err
+		}
+		defaultRole = *r
+	}
+
+	connector := &Connector{
 		cloudServiceClient: c,
 		accountCreationSettings: AccountCreationSettings{
-			DefaultAccountRole: identityv1.AccountAccess_ROLE_READ,
+			DefaultAccountRole: defaultRole,
 		},
 	}
 
-	for _, opt := range opts {
-		if err := opt(tc); err != nil {
-			return nil, err
-		}
-	}
-
-	return tc, nil
+	return connector, nil, nil
 }
 
 type Opt func(*Connector) error

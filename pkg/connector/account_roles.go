@@ -11,6 +11,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/conductorone/baton-sdk/pkg/types/entitlement"
+	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	identityv1 "go.temporal.io/cloud-sdk/api/identity/v1"
 	"go.uber.org/zap"
@@ -45,27 +46,27 @@ func (o *accountRoleBuilder) ResourceType(ctx context.Context) *v2.ResourceType 
 	return accountRoleResourceType
 }
 
-func (o *accountRoleBuilder) List(ctx context.Context, _ *v2.ResourceId, _ *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
+func (o *accountRoleBuilder) List(ctx context.Context, _ *v2.ResourceId, _ rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
 	accountID, err := o.client.GetAccountID(ctx)
 	if err != nil {
-		return nil, "", nil, fmt.Errorf("failed to get account ID: %w", err)
+		return nil, nil, fmt.Errorf("failed to get account ID: %w", err)
 	}
 	var rv []*v2.Resource
 	for _, role := range accountRoles {
 		roleResource, err := protoAccountRoleToResource(role, accountID)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, nil, err
 		}
 		rv = append(rv, roleResource)
 	}
 
-	return rv, "", nil, nil
+	return rv, nil, nil
 }
 
-func (o *accountRoleBuilder) Entitlements(ctx context.Context, r *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
+func (o *accountRoleBuilder) Entitlements(ctx context.Context, r *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
 	accountID, err := o.client.GetAccountID(ctx)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 
 	ar := AccountAccessRoleFromID(r.GetId().GetResource(), accountID)
@@ -85,19 +86,19 @@ func (o *accountRoleBuilder) Entitlements(ctx context.Context, r *v2.Resource, _
 		entitlement.WithDescription(fmt.Sprintf("Has the %s role in Temporal Cloud", r.GetDisplayName())),
 		entitlement.WithDisplayName(fmt.Sprintf("%s Role Member", r.GetDisplayName())),
 		entitlement.WithAnnotation(annos...))
-	return []*v2.Entitlement{member}, "", nil, nil
+	return []*v2.Entitlement{member}, nil, nil
 }
 
-func (o *accountRoleBuilder) Grants(ctx context.Context, r *v2.Resource, pToken *pagination.Token) ([]*v2.Grant, string, annotations.Annotations, error) {
+func (o *accountRoleBuilder) Grants(ctx context.Context, r *v2.Resource, opts rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
 	accountID, err := o.client.GetAccountID(ctx)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 
 	bag := &pagination.Bag{}
-	err = bag.Unmarshal(pToken.Token)
+	err = bag.Unmarshal(opts.PageToken.Token)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 	if bag.Current() == nil {
 		bag.Push(pagination.PageState{
@@ -112,7 +113,7 @@ func (o *accountRoleBuilder) Grants(ctx context.Context, r *v2.Resource, pToken 
 
 	resp, err := o.client.GetUsers(ctx, req)
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 
 	var rv []*v2.Grant
@@ -122,7 +123,7 @@ func (o *accountRoleBuilder) Grants(ctx context.Context, r *v2.Resource, pToken 
 		}
 		grantResource, err := createAccountRoleGrant(user, r, accountID)
 		if err != nil {
-			return nil, "", nil, err
+			return nil, nil, err
 		}
 		rv = append(rv, grantResource)
 	}
