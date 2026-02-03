@@ -7,7 +7,9 @@ import (
 	"time"
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
+	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/connectorbuilder"
+	"github.com/conductorone/baton-sdk/pkg/pagination"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	identityv1 "go.temporal.io/cloud-sdk/api/identity/v1"
@@ -21,7 +23,7 @@ const (
 	UserDeletionMaxDuration = 10 * time.Minute
 )
 
-var _ connectorbuilder.AccountManager = (*userBuilder)(nil)
+var _ connectorbuilder.AccountManagerV2 = (*userBuilder)(nil)
 
 type AccountCreationSettings struct {
 	DefaultAccountRole identityv1.AccountAccess_Role
@@ -38,9 +40,21 @@ func (o *userBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 // List returns all the users from the database as resource objects.
 // Users include a UserTrait because they are the 'shape' of a standard user.
 func (o *userBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, opts rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
+	bag := &pagination.Bag{}
+	err := bag.Unmarshal(opts.PageToken.Token)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if bag.Current() == nil {
+		bag.Push(pagination.PageState{
+			ResourceTypeID: userResourceType.Id,
+		})
+	}
+
 	req := &cloudservicev1.GetUsersRequest{}
-	if opts.PageToken != nil && opts.PageToken.Token != "" {
-		req.PageToken = opts.PageToken.Token
+	if bag.PageToken() != "" {
+		req.PageToken = bag.PageToken()
 	}
 
 	resp, err := o.client.GetUsers(ctx, req)
@@ -57,7 +71,7 @@ func (o *userBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId,
 		rv = append(rv, userResource)
 	}
 
-	return rv, &rs.SyncOpResults{NextPageToken: resp.NextPageToken}, nil
+	return paginate(rv, bag, resp.NextPageToken)
 }
 
 // Entitlements always returns an empty slice for users.

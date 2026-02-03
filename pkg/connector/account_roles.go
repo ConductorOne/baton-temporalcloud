@@ -9,6 +9,7 @@ import (
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
+	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
@@ -94,9 +95,20 @@ func (o *accountRoleBuilder) Grants(ctx context.Context, r *v2.Resource, opts rs
 		return nil, nil, err
 	}
 
+	bag := &pagination.Bag{}
+	err = bag.Unmarshal(opts.PageToken.Token)
+	if err != nil {
+		return nil, nil, err
+	}
+	if bag.Current() == nil {
+		bag.Push(pagination.PageState{
+			ResourceTypeID: r.Id.ResourceType,
+			ResourceID:     r.Id.Resource,
+		})
+	}
 	req := &cloudservicev1.GetUsersRequest{}
-	if opts.PageToken != nil && opts.PageToken.Token != "" {
-		req.PageToken = opts.PageToken.Token
+	if bag.PageToken() != "" {
+		req.PageToken = bag.PageToken()
 	}
 
 	resp, err := o.client.GetUsers(ctx, req)
@@ -115,7 +127,7 @@ func (o *accountRoleBuilder) Grants(ctx context.Context, r *v2.Resource, opts rs
 		}
 		rv = append(rv, grantResource)
 	}
-	return rv, &rs.SyncOpResults{NextPageToken: resp.GetNextPageToken()}, nil
+	return paginate(rv, bag, resp.GetNextPageToken())
 }
 
 func (o *accountRoleBuilder) Grant(ctx context.Context, principal *v2.Resource, e *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {

@@ -8,6 +8,7 @@ import (
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
+	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
@@ -35,9 +36,21 @@ func (o *namespaceBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 }
 
 func (o *namespaceBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, opts rs.SyncOpAttrs) ([]*v2.Resource, *rs.SyncOpResults, error) {
+	bag := &pagination.Bag{}
+	err := bag.Unmarshal(opts.PageToken.Token)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if bag.Current() == nil {
+		bag.Push(pagination.PageState{
+			ResourceTypeID: namespaceResourceType.Id,
+		})
+	}
+
 	req := &cloudservicev1.GetNamespacesRequest{}
-	if opts.PageToken != nil && opts.PageToken.Token != "" {
-		req.PageToken = opts.PageToken.Token
+	if bag.PageToken() != "" {
+		req.PageToken = bag.PageToken()
 	}
 
 	resp, err := o.client.GetNamespaces(ctx, req)
@@ -54,7 +67,7 @@ func (o *namespaceBuilder) List(ctx context.Context, parentResourceID *v2.Resour
 		rv = append(rv, nsResource)
 	}
 
-	return rv, &rs.SyncOpResults{NextPageToken: resp.GetNextPageToken()}, nil
+	return paginate(rv, bag, resp.GetNextPageToken())
 }
 
 func (o *namespaceBuilder) Entitlements(_ context.Context, resource *v2.Resource, _ rs.SyncOpAttrs) ([]*v2.Entitlement, *rs.SyncOpResults, error) {
@@ -77,9 +90,21 @@ func (o *namespaceBuilder) Entitlements(_ context.Context, resource *v2.Resource
 }
 
 func (o *namespaceBuilder) Grants(ctx context.Context, resource *v2.Resource, opts rs.SyncOpAttrs) ([]*v2.Grant, *rs.SyncOpResults, error) {
+	bag := &pagination.Bag{}
+	err := bag.Unmarshal(opts.PageToken.Token)
+	if err != nil {
+		return nil, nil, err
+	}
+	if bag.Current() == nil {
+		bag.Push(pagination.PageState{
+			ResourceTypeID: resource.GetId().GetResourceType(),
+			ResourceID:     resource.GetId().GetResource(),
+		})
+	}
+
 	req := &cloudservicev1.GetUsersRequest{Namespace: resource.GetDisplayName()}
-	if opts.PageToken != nil && opts.PageToken.Token != "" {
-		req.PageToken = opts.PageToken.Token
+	if bag.PageToken() != "" {
+		req.PageToken = bag.PageToken()
 	}
 
 	resp, err := o.client.GetUsers(ctx, req)
@@ -101,7 +126,7 @@ func (o *namespaceBuilder) Grants(ctx context.Context, resource *v2.Resource, op
 		rv = append(rv, g)
 	}
 
-	return rv, &rs.SyncOpResults{NextPageToken: resp.GetNextPageToken()}, nil
+	return paginate(rv, bag, resp.GetNextPageToken())
 }
 
 func (o *namespaceBuilder) Grant(ctx context.Context, principal *v2.Resource, e *v2.Entitlement) ([]*v2.Grant, annotations.Annotations, error) {
