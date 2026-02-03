@@ -1,4 +1,4 @@
-name: Generate connector capabilities
+name: Generate capabilities and config schema
 
 on:
   push:
@@ -6,7 +6,8 @@ on:
       - main
 
 jobs:
-  calculate-capabilities:
+  generate_outputs:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
 
     steps:
@@ -18,12 +19,15 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: 'go.mod'
+          go-version-file: "go.mod"
 
       - name: Build
         run: go build -o connector ./cmd/baton-temporalcloud
 
-      - name: Run and save output
+      - name: Run and save config output
+        run: ./connector config > config_schema.json
+
+      - name: Run and save capabilities output
         env:
           BATON_API_KEY: ${{ secrets.TEMPORAL_CLOUD_API_KEY }}
         run: ./connector capabilities > baton_capabilities.json
@@ -32,5 +36,7 @@ jobs:
         uses: EndBug/add-and-commit@v9
         with:
           default_author: github_actions
-          message: 'Updating baton capabilities.'
-          add: 'baton_capabilities.json'
+          message: "Updating baton config schema and capabilities."
+          add: |
+            config_schema.json
+            baton_capabilities.json
