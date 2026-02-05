@@ -235,6 +235,19 @@ func namespaceAccessPermissionFromString(in string) identityv1.NamespaceAccess_P
 	return identityv1.NamespaceAccess_Permission(rv)
 }
 
+// nextLowerNamespacePermission returns the next lower permission level in the hierarchy.
+// Admin → Write, Write → Read, Read → Unspecified (meaning remove access entirely).
+func nextLowerNamespacePermission(current identityv1.NamespaceAccess_Permission) identityv1.NamespaceAccess_Permission {
+	switch current {
+	case identityv1.NamespaceAccess_PERMISSION_ADMIN:
+		return identityv1.NamespaceAccess_PERMISSION_WRITE
+	case identityv1.NamespaceAccess_PERMISSION_WRITE:
+		return identityv1.NamespaceAccess_PERMISSION_READ
+	default:
+		return identityv1.NamespaceAccess_PERMISSION_UNSPECIFIED
+	}
+}
+
 func AccountAccessRoleFromID(in string, accountID string) identityv1.AccountAccess_Role {
 	if strings.HasSuffix(in, accountID) { // handle legacy admin role ID
 		return identityv1.AccountAccess_ROLE_ADMIN
