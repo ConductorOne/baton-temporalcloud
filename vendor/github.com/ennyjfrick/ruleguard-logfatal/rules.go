@@ -5,7 +5,11 @@ import "github.com/quasilyte/go-ruleguard/dsl"
 var Bundle = dsl.Bundle{}
 
 func noFatal(m dsl.Matcher) { //nolint:unused // magically exported
-	m.Match(`$_.Fatal($*_)`, `$_.Fatalf($*_)`, `$_.Fatalln($*_)`, `$_.Fatalw($*_)`, `$_.fatal($*_)`, `$_.fatalf($*_)`, `$_.fatalln($*_), $_.fatalw($*_)`).Report(`propagate errors rather than calling $$`) // catches most, if not all, x.[fF]atal(f|ln|w)? patterns
+	m.Match(`$caller.Fatal($*_)`, `$caller.fatal($*_)`).Where(!m["caller"].Type.Is(`*testing.T`) && !m["caller"].Type.Is(`*testing.B`) && !m["caller"].Type.Is(`*testing.F`)).Report(`propagate errors rather than calling $$`) // ignore *testing.T.Fatal and equiv, but match log.Fatal and equiv
+
+	m.Match(`$caller.Fatalf($*_)`, `$caller.fatalf($*_)`).Where(!m["caller"].Type.Is(`*testing.T`) && !m["caller"].Type.Is(`*testing.B`) && !m["caller"].Type.Is(`*testing.F`)).Report(`propagate errors rather than calling $$`) // ignore *testing.T.Fatalf and equiv, but match log.Fatalf and equiv
+
+	m.Match(`$_.Fatalln($*_)`, `$_.fatalln($*_)`, `$_.Fatalw($*_)`, `$_.fatalw($*_)`).Report(`propagate errors rather than calling $$`) // catches most, if not all, x.[fF]atal(ln|w)? patterns
 
 	m.Match(`$_.FatalFn($*_)`).Report(`propagate errors rather than calling $$`) // logrus-specific pattern
 
