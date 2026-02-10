@@ -4,10 +4,10 @@ go 1.25.2
 
 require (
 	github.com/conductorone/baton-sdk v0.7.16
-	github.com/ennyjfrick/ruleguard-logfatal v0.0.1
+	github.com/ennyjfrick/ruleguard-logfatal v0.0.2
 	github.com/fatih/camelcase v1.0.0
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
-	github.com/quasilyte/go-ruleguard/dsl v0.3.22
+	github.com/quasilyte/go-ruleguard/dsl v0.3.23
 	github.com/spf13/viper v1.20.1
 	github.com/stretchr/testify v1.11.1
 	go.temporal.io/cloud-sdk v0.3.1

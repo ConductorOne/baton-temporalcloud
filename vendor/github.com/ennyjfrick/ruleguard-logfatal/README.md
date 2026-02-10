@@ -15,7 +15,7 @@ Errors should be propagated and handled accordingly, rather than cause an applic
 ### Installation
 
 Install `ruleguard-logfatal` like you would any other `ruleguard` bundle:
-1. If you're not using `golangci-lint`, then [get `ruleguard` first](https://github.com/quasilyte/go-ruleguard?tab=readme-ov-file#quick-start
+1. If you're not using `golangci-lint`, then [get `ruleguard` first](https://github.com/quasilyte/go-ruleguard?tab=readme-ov-file#quick-start)
 2. `go get -u github.com/ennyjfrick/ruleguard-logfatal@latest`
 3. Create a `rules.go` with the following content somewhere in your project directory:
 ```go

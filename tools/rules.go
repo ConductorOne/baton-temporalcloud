@@ -1,7 +1,7 @@
 //go:build ruleguard
 // +build ruleguard
 
-package tools
+package gorules
 
 import (
 	"github.com/quasilyte/go-ruleguard/dsl"
