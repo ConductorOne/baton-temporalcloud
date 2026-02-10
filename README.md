@@ -1,6 +1,6 @@
 ![Baton Logo](./docs/images/baton-logo.png)
 
-# `baton-temporalcloud` [![Go Reference](https://pkg.go.dev/badge/github.com/conductorone/baton-temporalcloud.svg)](https://pkg.go.dev/github.com/conductorone/baton-temporalcloud) ![main ci](https://github.com/conductorone/baton-temporalcloud/actions/workflows/main.yaml/badge.svg)
+# `baton-temporalcloud` [![Go Reference](https://pkg.go.dev/badge/github.com/conductorone/baton-temporalcloud.svg)](https://pkg.go.dev/github.com/conductorone/baton-temporalcloud) ![ci](https://github.com/conductorone/baton-temporalcloud/actions/workflows/ci.yaml/badge.svg) ![verify](https://github.com/conductorone/baton-temporalcloud/actions/workflows/verify.yaml/badge.svg)
 
 `baton-temporalcloud` is a connector for [Temporal Cloud](https://temporal.io/cloud) built using the [Baton SDK](https://github.com/conductorone/baton-sdk). It communicates with the Temporal Cloud API to sync data about namespace permissions, account roles, and users.
 
