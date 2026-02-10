@@ -22,6 +22,9 @@ jobs:
           terraform init -input=false
         working-directory: dev
         name: "Initialize Terraform"
+      - name: Import existing namespace if present
+        run: terraform import temporalcloud_namespace.test_namespace ${{ vars.TEST_NAMESPACE_NAME }} || true
+        working-directory: dev
       - run: |
           terraform apply -auto-approve -input=false
         working-directory: dev
