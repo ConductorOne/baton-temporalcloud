@@ -24,6 +24,7 @@ const (
 	apiKey             = "api-key"
 	allowInsecure      = "allow-insecure"
 	defaultAccountRole = "default-account-role"
+	baseURL            = "base-url"
 )
 
 var (
@@ -42,7 +43,12 @@ var (
 			r.In(defaultAccountRoleOpts)
 		}),
 	)
-	configurationFields = []field.SchemaField{APIKeyField, AllowInsecureField, DefaultAccountRoleField}
+	BaseURLField = field.StringField(
+		baseURL,
+		field.WithDescription("Override the Temporal Cloud API URL (for testing)"),
+		field.WithHidden(true),
+	)
+	configurationFields = []field.SchemaField{APIKeyField, AllowInsecureField, DefaultAccountRoleField, BaseURLField}
 )
 
 func main() {
@@ -75,6 +81,7 @@ func getConnector(ctx context.Context, cfg *viper.Viper) (types.ConnectorServer,
 	cb, err := connector.New(ctx,
 		cfg.GetString(apiKey),
 		cfg.GetBool(allowInsecure),
+		cfg.GetString(baseURL),
 		opts...,
 	)
 	if err != nil {

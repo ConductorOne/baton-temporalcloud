@@ -80,10 +80,13 @@ func (d *Connector) Validate(ctx context.Context) (annotations.Annotations, erro
 }
 
 // New returns a new instance of the connector.
-func New(ctx context.Context, apiKey string, allowInsecure bool, opts ...Opt) (*Connector, error) {
+func New(ctx context.Context, apiKey string, allowInsecure bool, baseURL string, opts ...Opt) (*Connector, error) {
 	var clientOpts []client.Opt
 	if allowInsecure {
 		clientOpts = append(clientOpts, client.AllowInsecure())
+	}
+	if baseURL != "" {
+		clientOpts = append(clientOpts, client.WithAPIAddress(baseURL))
 	}
 
 	c, err := client.New(apiKey, clientOpts...)
