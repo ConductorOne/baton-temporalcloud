@@ -46,6 +46,7 @@ var (
 	BaseURLField = field.StringField(
 		baseURL,
 		field.WithDescription("Override the Temporal Cloud API URL (for testing)"),
+		field.WithHidden(true),
 	)
 	configurationFields = []field.SchemaField{APIKeyField, AllowInsecureField, DefaultAccountRoleField, BaseURLField}
 )
