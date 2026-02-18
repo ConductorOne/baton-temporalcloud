@@ -13,10 +13,9 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
-	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
-	"github.com/conductorone/baton-sdk/pkg/types/resource"
+	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/fatih/camelcase"
 	"go.uber.org/zap"
 
@@ -31,11 +30,11 @@ func protoUserToResource(proto *identityv1.User) (*v2.Resource, error) {
 		Id: fmt.Sprintf("user:%s", proto.GetSpec().GetEmail()),
 	}
 
-	user, err := resource.NewUserResource(proto.GetSpec().GetEmail(), userResourceType, proto.GetId(), []resource.UserTraitOption{
-		resource.WithEmail(proto.GetSpec().GetEmail(), true),
-		resource.WithCreatedAt(proto.GetCreatedTime().AsTime()),
-		resource.WithAccountType(v2.UserTrait_ACCOUNT_TYPE_HUMAN),
-	}, resource.WithAnnotation(annos))
+	user, err := rs.NewUserResource(proto.GetSpec().GetEmail(), userResourceType, proto.GetId(), []rs.UserTraitOption{
+		rs.WithEmail(proto.GetSpec().GetEmail(), true),
+		rs.WithCreatedAt(proto.GetCreatedTime().AsTime()),
+		rs.WithAccountType(v2.UserTrait_ACCOUNT_TYPE_HUMAN),
+	}, rs.WithAnnotation(annos))
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +46,7 @@ func protoNamespaceToResource(proto *namespacev1.Namespace) (*v2.Resource, error
 		Id: fmt.Sprintf("namespace:%s", proto.GetNamespace()),
 	}
 
-	ns, err := resource.NewResource(proto.GetNamespace(), namespaceResourceType, proto.GetNamespace(), resource.WithAnnotation(annos))
+	ns, err := rs.NewResource(proto.GetNamespace(), namespaceResourceType, proto.GetNamespace(), rs.WithAnnotation(annos))
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +59,7 @@ func protoAccountRoleToResource(proto identityv1.AccountAccess_Role, accountID s
 	annos := &v2.V1Identifier{
 		Id: fmt.Sprintf("account-role:%s", ar),
 	}
-	role, err := resource.NewRoleResource(accountRoleDisplayName(proto), accountRoleResourceType, getAccountRoleID(proto, accountID), []resource.RoleTraitOption{}, resource.WithAnnotation(annos))
+	role, err := rs.NewRoleResource(accountRoleDisplayName(proto), accountRoleResourceType, getAccountRoleID(proto, accountID), []rs.RoleTraitOption{}, rs.WithAnnotation(annos))
 	if err != nil {
 		return nil, err
 	}
@@ -152,16 +151,16 @@ func checkAsyncOperation(ctx context.Context, client cloudservicev1.CloudService
 	return false, nil
 }
 
-func paginate[T any](rv T, bag *pagination.Bag, pageToken string) (T, string, annotations.Annotations, error) {
+func paginate[T any](rv T, bag *pagination.Bag, pageToken string) (T, *rs.SyncOpResults, error) {
 	if pageToken == "" {
-		return rv, "", nil, nil
+		return rv, nil, nil
 	}
 
 	token, err := bag.NextToken(pageToken)
 	if err != nil {
-		return rv, "", nil, err
+		return rv, nil, err
 	}
-	return rv, token, nil, nil
+	return rv, &rs.SyncOpResults{NextPageToken: token}, nil
 }
 
 const (
