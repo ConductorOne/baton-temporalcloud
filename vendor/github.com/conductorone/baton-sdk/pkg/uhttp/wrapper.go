@@ -324,15 +324,16 @@ func WithGenericResponse(response *map[string]any) DoOption {
 		}
 
 		if IsXMLContentType(resp.Header.Get(ContentType)) {
-			var xm xmlMap
-			err = WithXMLResponse(&xm)(resp)
+			err = WithXMLResponse(response)(resp)
 			if err != nil {
 				return err
 			}
-			if vMap, ok := xm.data.(map[string]any); ok {
+			if list, ok := v.([]any); ok {
+				(*response)["items"] = list
+			} else if vMap, ok := v.(map[string]any); ok {
 				*response = vMap
 			} else {
-				return status.Errorf(codes.Internal, "unsupported XML structure: %T", xm.data)
+				return status.Errorf(codes.Internal, "unsupported content type: %T", v)
 			}
 			return nil
 		}
@@ -410,7 +411,6 @@ func (c *BaseHttpClient) Do(req *http.Request, options ...DoOption) (*http.Respo
 	}
 
 	if resp == nil {
-		//nolint:gosec // this HTTP wrapper intentionally supports arbitrary connector-defined endpoints.
 		resp, err = c.HttpClient.Do(req)
 		if err != nil {
 			l.Error("base-http-client: HTTP error response", zap.Error(err))

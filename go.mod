@@ -3,7 +3,7 @@ module github.com/conductorone/baton-temporalcloud
 go 1.25.2
 
 require (
-	github.com/conductorone/baton-sdk v0.7.22
+	github.com/conductorone/baton-sdk v0.7.21
 	github.com/ennyjfrick/ruleguard-logfatal v0.0.2
 	github.com/fatih/camelcase v1.0.0
 	github.com/grpc-ecosystem/go-grpc-middleware v1.4.0
