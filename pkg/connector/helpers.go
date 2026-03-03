@@ -106,6 +106,68 @@ func createAccountRoleGrant(user *identityv1.User, ar *v2.Resource, accountID st
 	return g, nil
 }
 
+func protoUserGroupToResource(proto *identityv1.UserGroup) (*v2.Resource, error) {
+	annos := &v2.V1Identifier{
+		Id: fmt.Sprintf("group:%s", proto.GetId()),
+	}
+
+	var profile map[string]interface{}
+	switch {
+	case proto.GetSpec().GetGoogleGroup() != nil:
+		profile = map[string]interface{}{
+			"group_type":    "google",
+			"email_address": proto.GetSpec().GetGoogleGroup().GetEmailAddress(),
+		}
+	case proto.GetSpec().GetScimGroup() != nil:
+		profile = map[string]interface{}{
+			"group_type": "scim",
+			"idp_id":     proto.GetSpec().GetScimGroup().GetIdpId(),
+		}
+	case proto.GetSpec().GetCloudGroup() != nil:
+		profile = map[string]interface{}{
+			"group_type": "cloud",
+		}
+	}
+
+	var groupTraitOpts []rs.GroupTraitOption
+	if profile != nil {
+		groupTraitOpts = append(groupTraitOpts, rs.WithGroupProfile(profile))
+	}
+
+	group, err := rs.NewGroupResource(proto.GetSpec().GetDisplayName(), groupResourceType, proto.GetId(), groupTraitOpts, rs.WithAnnotation(annos))
+	if err != nil {
+		return nil, err
+	}
+	return group, nil
+}
+
+func createGroupMemberGrant(user *identityv1.User, group *v2.Resource) (*v2.Grant, error) {
+	ur, err := protoUserToResource(user)
+	if err != nil {
+		return nil, err
+	}
+	annos := &v2.V1Identifier{
+		Id: grantID(membershipEntitlementID(group.GetId().GetResource()), ur.GetId().GetResource()),
+	}
+	g := grant.NewGrant(group, roleMemberEntitlement, ur.GetId(), grant.WithAnnotation(annos))
+	g.Principal = ur
+	return g, nil
+}
+
+func createNamespaceGroupGrant(group *identityv1.UserGroup, namespace *v2.Resource, permission identityv1.NamespaceAccess_Permission) (*v2.Grant, error) {
+	perm := namespacePermissionName(permission)
+	gr, err := protoUserGroupToResource(group)
+	if err != nil {
+		return nil, err
+	}
+	annos := &v2.V1Identifier{
+		Id: grantID(namespaceEntitlementID(namespace.GetId().GetResource(), perm), gr.GetId().GetResource()),
+	}
+	g := grant.NewGrant(namespace, perm, gr.GetId(), grant.WithAnnotation(annos))
+	g.Principal = gr
+	return g, nil
+}
+
 func awaitAsyncOperation(ctx context.Context, l *zap.Logger, client cloudservicev1.CloudServiceClient, requestID string, retryDelay time.Duration) error {
 	complete, err := checkAsyncOperation(ctx, client, requestID)
 	if err != nil {
