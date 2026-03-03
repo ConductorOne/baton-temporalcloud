@@ -30,6 +30,7 @@ func (d *Connector) ResourceSyncers(ctx context.Context) []connectorbuilder.Reso
 		newUserBuilder(d.cloudServiceClient, d.accountCreationSettings),
 		newNamespaceBuilder(d.cloudServiceClient),
 		newAccountBuilder(d.cloudServiceClient),
+		newGroupBuilder(d.cloudServiceClient),
 	}
 }
 
