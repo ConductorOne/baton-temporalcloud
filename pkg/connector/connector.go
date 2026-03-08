@@ -84,6 +84,9 @@ func (d *Connector) Validate(ctx context.Context) (annotations.Annotations, erro
 // New returns a new instance of the connector.
 func New(ctx context.Context, tc *cfg.TemporalCloud, opts *cli.ConnectorOpts) (connectorbuilder.ConnectorBuilderV2, []connectorbuilder.Opt, error) {
 	var clientOpts []client.Opt
+	if tc.BaseUrl != "" {
+		clientOpts = append(clientOpts, client.WithAPIAddress(tc.BaseUrl))
+	}
 	if tc.AllowInsecure {
 		clientOpts = append(clientOpts, client.AllowInsecure())
 	}
