@@ -29,12 +29,20 @@ var (
 		field.WithRequired(false),
 	)
 
+	BaseURLField = field.StringField(
+		"base-url",
+		field.WithDescription("Override the Temporal Cloud API URL (for testing)"),
+		field.WithHidden(true),
+		field.WithExportTarget(field.ExportTargetCLIOnly),
+	)
+
 	// ConfigurationFields defines the external configuration required for the
 	// connector to run.
 	ConfigurationFields = []field.SchemaField{
 		APIKeyField,
 		AllowInsecureField,
 		DefaultAccountRoleField,
+		BaseURLField,
 	}
 
 	// FieldRelationships defines relationships between the fields listed in
