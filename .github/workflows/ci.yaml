@@ -22,6 +22,10 @@ jobs:
           terraform init -input=false
         working-directory: dev
         name: "Initialize Terraform"
+      - name: "Delete test namesapce"
+        run: |
+          terraform apply -destroy -auto-approve -input=false
+        working-directory: dev
       - run: |
           terraform apply -auto-approve -input=false
         working-directory: dev
