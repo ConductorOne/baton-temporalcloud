@@ -1,59 +1,59 @@
 {
-  "@type": "type.googleapis.com/c1.connector.v2.ConnectorCapabilities",
-  "resourceTypeCapabilities": [
+  "@type":  "type.googleapis.com/c1.connector.v2.ConnectorCapabilities",
+  "resourceTypeCapabilities":  [
     {
-      "resourceType": {
-        "id": "account-role",
-        "displayName": "Account Role",
-        "traits": [
+      "resourceType":  {
+        "id":  "account-role",
+        "displayName":  "Account Role",
+        "traits":  [
           "TRAIT_ROLE"
         ]
       },
-      "capabilities": [
+      "capabilities":  [
         "CAPABILITY_SYNC",
         "CAPABILITY_PROVISION"
       ],
-      "permissions": {}
+      "permissions":  {}
     },
     {
-      "resourceType": {
-        "id": "namespace",
-        "displayName": "Namespace"
+      "resourceType":  {
+        "id":  "namespace",
+        "displayName":  "Namespace"
       },
-      "capabilities": [
+      "capabilities":  [
         "CAPABILITY_SYNC",
         "CAPABILITY_PROVISION"
       ],
-      "permissions": {}
+      "permissions":  {}
     },
     {
-      "resourceType": {
-        "id": "user",
-        "displayName": "User",
-        "traits": [
+      "resourceType":  {
+        "id":  "user",
+        "displayName":  "User",
+        "traits":  [
           "TRAIT_USER"
         ]
       },
-      "capabilities": [
+      "capabilities":  [
         "CAPABILITY_SYNC",
         "CAPABILITY_ACCOUNT_PROVISIONING",
         "CAPABILITY_RESOURCE_DELETE"
       ],
-      "permissions": {}
+      "permissions":  {}
     }
   ],
-  "connectorCapabilities": [
+  "connectorCapabilities":  [
     "CAPABILITY_PROVISION",
     "CAPABILITY_SYNC",
     "CAPABILITY_ACCOUNT_PROVISIONING",
     "CAPABILITY_RESOURCE_DELETE"
   ],
-  "credentialDetails": {
-    "capabilityAccountProvisioning": {
-      "supportedCredentialOptions": [
+  "credentialDetails":  {
+    "capabilityAccountProvisioning":  {
+      "supportedCredentialOptions":  [
         "CAPABILITY_DETAIL_CREDENTIAL_OPTION_NO_PASSWORD"
       ],
-      "preferredCredentialOption": "CAPABILITY_DETAIL_CREDENTIAL_OPTION_NO_PASSWORD"
+      "preferredCredentialOption":  "CAPABILITY_DETAIL_CREDENTIAL_OPTION_NO_PASSWORD"
     }
   }
 }
