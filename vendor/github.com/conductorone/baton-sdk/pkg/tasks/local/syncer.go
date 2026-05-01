@@ -3,7 +3,6 @@ package local
 import (
 	"context"
 	"errors"
-	"runtime"
 	"sync"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 	sdkSync "github.com/conductorone/baton-sdk/pkg/sync"
 	"github.com/conductorone/baton-sdk/pkg/tasks"
 	"github.com/conductorone/baton-sdk/pkg/types"
+	"github.com/conductorone/baton-sdk/pkg/uotel"
 )
 
 type localSyncer struct {
@@ -27,7 +27,7 @@ type localSyncer struct {
 	skipEntitlementsAndGrants           bool
 	skipGrants                          bool
 	syncResourceTypeIDs                 []string
-	parallelSync                        bool
+	workerCount                         int
 }
 
 type Option func(*localSyncer)
@@ -74,9 +74,9 @@ func WithSkipGrants(skip bool) Option {
 	}
 }
 
-func WithParallelSyncEnabled(parallel bool) Option {
+func WithWorkerCount(workerCount int) Option {
 	return func(m *localSyncer) {
-		m.parallelSync = parallel
+		m.workerCount = workerCount
 	}
 }
 
@@ -100,7 +100,8 @@ func (m *localSyncer) Next(ctx context.Context) (*v1.Task, time.Duration, error)
 
 func (m *localSyncer) Process(ctx context.Context, task *v1.Task, cc types.ConnectorClient) error {
 	ctx, span := tracer.Start(ctx, "localSyncer.Process", trace.WithNewRoot())
-	defer span.End()
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 
 	var setSessionStore session.SetSessionStore
 	if ssetSessionStore, ok := cc.(session.SetSessionStore); ok {
@@ -117,12 +118,7 @@ func (m *localSyncer) Process(ctx context.Context, task *v1.Task, cc types.Conne
 		sdkSync.WithSkipGrants(m.skipGrants),
 		sdkSync.WithSessionStore(setSessionStore),
 		sdkSync.WithSyncResourceTypes(m.syncResourceTypeIDs),
-	}
-
-	if m.parallelSync {
-		workerCount := min(max(runtime.GOMAXPROCS(0), 1), 4)
-		// TODO: allow configurable worker count
-		syncOpts = append(syncOpts, sdkSync.WithWorkerCount(workerCount))
+		sdkSync.WithWorkerCount(m.workerCount),
 	}
 
 	syncer, err := sdkSync.NewSyncer(ctx, cc, syncOpts...)

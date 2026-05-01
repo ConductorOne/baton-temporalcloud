@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
@@ -19,6 +18,7 @@ import (
 	sdkSync "github.com/conductorone/baton-sdk/pkg/sync"
 	"github.com/conductorone/baton-sdk/pkg/tasks"
 	"github.com/conductorone/baton-sdk/pkg/types"
+	"github.com/conductorone/baton-sdk/pkg/uotel"
 )
 
 type fullSyncHelpers interface {
@@ -37,13 +37,13 @@ type fullSyncTaskHandler struct {
 	externalResourceEntitlementIdFilter string
 	targetedSyncResources               []*v2.Resource
 	syncResourceTypeIDs                 []string
-	parallelSync                        bool
+	workerCount                         int
 }
 
 func (c *fullSyncTaskHandler) sync(ctx context.Context, c1zPath string) error {
 	ctx, span := tracer.Start(ctx, "fullSyncTaskHandler.sync")
-	defer span.End()
-
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 	l := ctxzap.Extract(ctx).With(zap.String("task_id", c.task.GetId()), zap.Stringer("task_type", tasks.GetType(c.task)))
 
 	if c.task.GetSyncFull() == nil {
@@ -53,6 +53,7 @@ func (c *fullSyncTaskHandler) sync(ctx context.Context, c1zPath string) error {
 	syncOpts := []sdkSync.SyncOpt{
 		sdkSync.WithC1ZPath(c1zPath),
 		sdkSync.WithTmpDir(c.helpers.TempDir()),
+		sdkSync.WithWorkerCount(c.workerCount),
 	}
 
 	if c.task.GetSyncFull().GetSkipExpandGrants() {
@@ -86,18 +87,18 @@ func (c *fullSyncTaskHandler) sync(ctx context.Context, c1zPath string) error {
 	}
 	cc := c.helpers.ConnectorClient()
 
-	if len(c.syncResourceTypeIDs) > 0 {
-		syncOpts = append(syncOpts, sdkSync.WithSyncResourceTypes(c.syncResourceTypeIDs))
+	// Prefer the task's resource type IDs (from the server/UI) over local config.
+	// The UI is the authoritative source when set; local config is the fallback.
+	syncResourceTypeIDs := c.task.GetSyncFull().GetSyncResourceTypeIds()
+	if len(syncResourceTypeIDs) == 0 {
+		syncResourceTypeIDs = c.syncResourceTypeIDs
+	}
+	if len(syncResourceTypeIDs) > 0 {
+		syncOpts = append(syncOpts, sdkSync.WithSyncResourceTypes(syncResourceTypeIDs))
 	}
 
 	if setSessionStore, ok := cc.(session.SetSessionStore); ok {
 		syncOpts = append(syncOpts, sdkSync.WithSessionStore(setSessionStore))
-	}
-
-	if c.parallelSync {
-		workerCount := min(max(runtime.GOMAXPROCS(0), 1), 4)
-		// TODO: allow configurable worker count
-		syncOpts = append(syncOpts, sdkSync.WithWorkerCount(workerCount))
 	}
 
 	syncer, err := sdkSync.NewSyncer(ctx, c.helpers.ConnectorClient(), syncOpts...)
@@ -138,8 +139,8 @@ func (c *fullSyncTaskHandler) sync(ctx context.Context, c1zPath string) error {
 // with a sync_id that does match our current state, we should resume our current sync, if possible.
 func (c *fullSyncTaskHandler) HandleTask(ctx context.Context) error {
 	ctx, span := tracer.Start(ctx, "fullSyncTaskHandler.HandleTask")
-	defer span.End()
-
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	l := ctxzap.Extract(ctx).With(zap.String("task_id", c.task.GetId()), zap.Stringer("task_type", tasks.GetType(c.task)))
@@ -170,21 +171,20 @@ func (c *fullSyncTaskHandler) HandleTask(ctx context.Context) error {
 		return c.helpers.FinishTask(ctx, nil, nil, err)
 	}
 
-	//nolint:gosec // c1zPath is created via os.CreateTemp above.
 	c1zF, err := os.Open(c1zPath)
 	if err != nil {
 		l.Error("failed to open sync asset prior to upload", zap.Error(err))
 		return c.helpers.FinishTask(ctx, nil, nil, err)
 	}
 	defer func(f *os.File) {
-		err = f.Close()
-		if err != nil {
-			l.Error("failed to close sync asset", zap.Error(err), zap.String("path", f.Name()))
+		closeErr := f.Close()
+		if closeErr != nil {
+			l.Error("failed to close sync asset", zap.Error(closeErr), zap.String("path", f.Name()))
 		}
-		//nolint:gosec // removing the same temp file created/opened in this function.
-		err = os.Remove(f.Name())
-		if err != nil {
-			l.Error("failed to remove temp file", zap.Error(err), zap.String("path", f.Name()))
+
+		removeErr := os.Remove(f.Name())
+		if removeErr != nil {
+			l.Error("failed to remove temp file", zap.Error(removeErr), zap.String("path", f.Name()))
 		}
 	}(c1zF)
 
@@ -211,7 +211,7 @@ func newFullSyncTaskHandler(
 	externalResourceEntitlementIdFilter string,
 	targetedSyncResources []*v2.Resource,
 	syncResourceTypeIDs []string,
-	parallelSync bool,
+	workerCount int,
 ) tasks.TaskHandler {
 	return &fullSyncTaskHandler{
 		task:                                task,
@@ -221,7 +221,7 @@ func newFullSyncTaskHandler(
 		externalResourceEntitlementIdFilter: externalResourceEntitlementIdFilter,
 		targetedSyncResources:               targetedSyncResources,
 		syncResourceTypeIDs:                 syncResourceTypeIDs,
-		parallelSync:                        parallelSync,
+		workerCount:                         workerCount,
 	}
 }
 
@@ -229,8 +229,8 @@ func newFullSyncTaskHandler(
 // otherwise silently return success.
 func uploadDebugLogs(ctx context.Context, helper fullSyncHelpers, deleteDebugLogs bool) error {
 	ctx, span := tracer.Start(ctx, "uploadDebugLogs")
-	defer span.End()
-
+	var err error
+	defer func() { uotel.EndSpanWithError(span, err) }()
 	l := ctxzap.Extract(ctx)
 
 	tempDir := helper.TempDir()
@@ -249,7 +249,7 @@ func uploadDebugLogs(ctx context.Context, helper fullSyncHelpers, deleteDebugLog
 	}
 	debugPath := filepath.Join(tempDir, "debug.log")
 
-	_, err := os.Stat(debugPath)
+	_, err = os.Stat(debugPath)
 	if err != nil {
 		switch {
 		case errors.Is(err, os.ErrNotExist):

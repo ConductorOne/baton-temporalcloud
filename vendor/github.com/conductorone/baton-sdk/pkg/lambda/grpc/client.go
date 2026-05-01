@@ -38,6 +38,9 @@ func (l *lambdaTransport) RoundTrip(ctx context.Context, req *Request) (*Respons
 	// Invoke the Lambda function.
 	invokeResp, err := l.lambdaClient.Invoke(ctx, input)
 	if err != nil {
+		if isTransientNetworkError(err) {
+			return nil, status.Errorf(codes.Unavailable, "lambda_transport: transient network error invoking function: %s", err)
+		}
 		return nil, fmt.Errorf("lambda_transport: failed to invoke lambda function: %w", err)
 	}
 
@@ -65,11 +68,14 @@ func (l *lambdaTransport) RoundTrip(ctx context.Context, req *Request) (*Respons
 		}
 		// If a third case is ever added to this, put the logic in its own function and add some test cases.
 
+		if filteredLogs != "" {
+			return nil, fmt.Errorf("%s", filteredLogs)
+		}
+
 		return nil, fmt.Errorf(
-			"lambda_transport: function returned error: %s; status code: %d; logSummary: %s",
+			"lambda_transport: function returned error: %s; status code: %d",
 			*invokeResp.FunctionError,
 			invokeResp.StatusCode,
-			filteredLogs,
 		)
 	}
 
@@ -186,6 +192,12 @@ func extractMeaningfulLogLines(raw string) string {
 		if slices.ContainsFunc(ignoredLogPrefixes, func(prefix string) bool {
 			return strings.HasPrefix(line, prefix)
 		}) || strings.Contains(line, "Runtime.ExitError") {
+			continue
+		}
+
+		// Skip structured JSON log lines (zap logger output) - they are
+		// diagnostic context, not the actual error.
+		if strings.HasPrefix(line, "{") {
 			continue
 		}
 

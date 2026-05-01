@@ -210,7 +210,7 @@ func (s *syncer) sequentialSync(
 			entitlementGraph := s.state.EntitlementGraph(ctx)
 			isResumingExpansion := entitlementGraph.Loaded || len(entitlementGraph.Edges) > 0 || stateAction.PageToken != ""
 			if !isResumingExpansion {
-				if err := s.store.SetSupportsDiff(ctx, s.syncID); err != nil {
+				if err := s.store.SyncMeta().MarkSyncSupportsDiff(ctx, s.syncID); err != nil {
 					l.Error("failed to set supports_diff marker", zap.Error(err))
 					return warnings, err
 				}
@@ -459,7 +459,7 @@ func (s *syncer) parallelSync(
 			entitlementGraph := s.state.EntitlementGraph(ctx)
 			isResumingExpansion := entitlementGraph.Loaded || len(entitlementGraph.Edges) > 0 || stateAction.PageToken != ""
 			if !isResumingExpansion {
-				if err := s.store.SetSupportsDiff(ctx, s.syncID); err != nil {
+				if err := s.store.SyncMeta().MarkSyncSupportsDiff(ctx, s.syncID); err != nil {
 					l.Error("failed to set supports_diff marker", zap.Error(err))
 					return warnings, err
 				}
@@ -510,6 +510,7 @@ func (s *syncer) syncParallel(ctx context.Context, retryer *retry.Retryer, actio
 				r := s.syncOneAction(ctx, l, retryer, action, f)
 				resultCh <- r
 				if r.err != nil {
+					l.Error("cancelling context due to error in action", zap.Any("action", action), zap.Error(r.err))
 					cancel(fmt.Errorf("cancelling context due to error in action %v: %w", action, r.err))
 					return
 				}
