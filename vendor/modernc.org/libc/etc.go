@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
-	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -99,7 +98,6 @@ func todo(s string, args ...interface{}) string { //TODO-
 		dmesg("%s", r)
 	}
 	fmt.Fprintf(os.Stdout, "%s\n", r)
-	fmt.Fprintf(os.Stdout, "%s\n", debug.Stack()) //TODO-
 	os.Stdout.Sync()
 	os.Exit(1)
 	panic("unrechable")
@@ -237,6 +235,7 @@ func (t *TLS) Close() {
 //		t.Free(11)
 //	t.Free(22)
 func (t *TLS) Alloc(n int) (r uintptr) {
+	t.sp++
 	if memgrind {
 		if atomic.SwapInt32(&t.reentryGuard, 1) != 0 {
 			panic(todo("concurrent use of TLS instance %p", t))
@@ -300,7 +299,6 @@ func (t *TLS) Alloc(n int) (r uintptr) {
 		panic("OOM")
 	}
 
-	t.sp++
 	if memgrind {
 		atomic.AddInt32(&t.stackHeaderBalance, 1)
 	}
@@ -322,6 +320,7 @@ const stackFrameKeepalive = 2
 // Free deallocates n bytes of thread-local storage. See TLS.Alloc for details
 // on correct usage.
 func (t *TLS) Free(n int) {
+	t.sp--
 	if memgrind {
 		if atomic.SwapInt32(&t.reentryGuard, 1) != 0 {
 			panic(todo("concurrent use of TLS instance %p", t))
@@ -352,7 +351,6 @@ func (t *TLS) Free(n int) {
 				}
 			}
 			Xfree(t, nstack.page)
-			t.sp--
 			if nstack.next == 0 {
 				break
 			}
