@@ -195,7 +195,7 @@ spec:
     spec:
       containers:
       - name: baton-temporalcloud
-        image: ghcr.io/conductorone/baton-temporalcloud:latest
+        image: public.ecr.aws/conductorone/baton-temporalcloud:latest
         imagePullPolicy: IfNotPresent
         env:
         - name: BATON_HOST_ID
@@ -218,6 +218,3 @@ Check that the connector data uploaded correctly. In C1, click **Apps**. On the 
 **That's it!** Your Temporal Cloud connector is now pulling access data into C1.
 </Tab>
 </Tabs>
-
-
-
