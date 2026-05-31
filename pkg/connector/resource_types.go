@@ -11,6 +11,14 @@ var userResourceType = &v2.ResourceType{
 	Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_USER},
 }
 
+// Temporal Cloud service accounts are a distinct identity from users (GetUsers
+// returns only humans); they are synced separately and emit ACCOUNT_TYPE_SERVICE.
+var serviceAccountResourceType = &v2.ResourceType{
+	Id:          "service-account",
+	DisplayName: "Service Account",
+	Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_USER},
+}
+
 var namespaceResourceType = &v2.ResourceType{
 	Id:          "namespace",
 	DisplayName: "Namespace",

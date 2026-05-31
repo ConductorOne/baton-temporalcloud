@@ -25,6 +25,9 @@ import (
 	operationv1 "go.temporal.io/cloud-sdk/api/operation/v1"
 )
 
+// protoUserToResource builds a user resource. Temporal Cloud's GetUsers returns
+// only human identities — service accounts are a separate identity fetched via
+// GetServiceAccounts (see protoServiceAccountToResource) — so HUMAN is correct here.
 func protoUserToResource(proto *identityv1.User) (*v2.Resource, error) {
 	annos := &v2.V1Identifier{
 		Id: fmt.Sprintf("user:%s", proto.GetSpec().GetEmail()),
@@ -39,6 +42,29 @@ func protoUserToResource(proto *identityv1.User) (*v2.Resource, error) {
 		return nil, err
 	}
 	return user, nil
+}
+
+// protoServiceAccountToResource builds a resource for a Temporal Cloud service
+// account, emitting ACCOUNT_TYPE_SERVICE so the identity is classified as
+// non-human at ingest (the SDK would otherwise default an unset type to HUMAN).
+func protoServiceAccountToResource(proto *identityv1.ServiceAccount) (*v2.Resource, error) {
+	annos := &v2.V1Identifier{
+		Id: fmt.Sprintf("service-account:%s", proto.GetId()),
+	}
+
+	name := proto.GetSpec().GetName()
+	if name == "" {
+		name = proto.GetId()
+	}
+
+	sa, err := rs.NewUserResource(name, serviceAccountResourceType, proto.GetId(), []rs.UserTraitOption{
+		rs.WithCreatedAt(proto.GetCreatedTime().AsTime()),
+		rs.WithAccountType(v2.UserTrait_ACCOUNT_TYPE_SERVICE),
+	}, rs.WithAnnotation(annos))
+	if err != nil {
+		return nil, err
+	}
+	return sa, nil
 }
 
 func protoNamespaceToResource(proto *namespacev1.Namespace) (*v2.Resource, error) {
