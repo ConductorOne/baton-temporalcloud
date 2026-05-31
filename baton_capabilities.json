@@ -28,6 +28,19 @@
     },
     {
       "resourceType": {
+        "id": "service-account",
+        "displayName": "Service Account",
+        "traits": [
+          "TRAIT_USER"
+        ]
+      },
+      "capabilities": [
+        "CAPABILITY_SYNC"
+      ],
+      "permissions": {}
+    },
+    {
+      "resourceType": {
         "id": "user",
         "displayName": "User",
         "traits": [
