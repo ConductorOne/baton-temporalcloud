@@ -32,6 +32,11 @@
         "displayName": "Service Account",
         "traits": [
           "TRAIT_USER"
+        ],
+        "annotations": [
+          {
+            "@type": "type.googleapis.com/c1.connector.v2.SkipEntitlementsAndGrants"
+          }
         ]
       },
       "capabilities": [
@@ -45,6 +50,11 @@
         "displayName": "User",
         "traits": [
           "TRAIT_USER"
+        ],
+        "annotations": [
+          {
+            "@type": "type.googleapis.com/c1.connector.v2.SkipEntitlementsAndGrants"
+          }
         ]
       },
       "capabilities": [
