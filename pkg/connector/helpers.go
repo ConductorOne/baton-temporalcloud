@@ -48,10 +48,6 @@ func protoUserToResource(proto *identityv1.User) (*v2.Resource, error) {
 // account, emitting ACCOUNT_TYPE_SERVICE so the identity is classified as
 // non-human at ingest (the SDK would otherwise default an unset type to HUMAN).
 func protoServiceAccountToResource(proto *identityv1.ServiceAccount) (*v2.Resource, error) {
-	annos := &v2.V1Identifier{
-		Id: fmt.Sprintf("service-account:%s", proto.GetId()),
-	}
-
 	name := proto.GetSpec().GetName()
 	if name == "" {
 		name = proto.GetId()
@@ -60,7 +56,7 @@ func protoServiceAccountToResource(proto *identityv1.ServiceAccount) (*v2.Resour
 	sa, err := rs.NewUserResource(name, serviceAccountResourceType, proto.GetId(), []rs.UserTraitOption{
 		rs.WithCreatedAt(proto.GetCreatedTime().AsTime()),
 		rs.WithAccountType(v2.UserTrait_ACCOUNT_TYPE_SERVICE),
-	}, rs.WithAnnotation(annos))
+	})
 	if err != nil {
 		return nil, err
 	}
