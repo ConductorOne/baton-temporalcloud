@@ -225,8 +225,7 @@ func (o *namespaceBuilder) Revoke(ctx context.Context, g *v2.Grant) (annotations
 	spec := user.GetSpec()
 	_, ok := spec.GetAccess().GetNamespaceAccesses()[namespaceID]
 	if !ok {
-		annos := annotations.New(&v2.GrantAlreadyRevoked{})
-		return annos, fmt.Errorf("baton-temporalcloud: grant does not exist for user")
+		return annotations.New(&v2.GrantAlreadyRevoked{}), nil
 	}
 
 	delete(spec.Access.NamespaceAccesses, namespaceID)

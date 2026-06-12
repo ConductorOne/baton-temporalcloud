@@ -28,6 +28,7 @@ type Connector struct {
 func (d *Connector) ResourceSyncers(ctx context.Context) []connectorbuilder.ResourceSyncerV2 {
 	return []connectorbuilder.ResourceSyncerV2{
 		newUserBuilder(d.cloudServiceClient, d.accountCreationSettings),
+		newServiceAccountBuilder(d.cloudServiceClient),
 		newNamespaceBuilder(d.cloudServiceClient),
 		newAccountBuilder(d.cloudServiceClient),
 	}
