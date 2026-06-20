@@ -69,6 +69,103 @@ func TestAccountAccessRoleFromID(t *testing.T) {
 	}
 }
 
+func TestNextLowerNamespacePermission(t *testing.T) {
+	t.Parallel()
+	tt := []struct {
+		Name     string
+		Input    identityv1.NamespaceAccess_Permission
+		Expected identityv1.NamespaceAccess_Permission
+	}{
+		{
+			Name:     "admin downgrades to write",
+			Input:    identityv1.NamespaceAccess_PERMISSION_ADMIN,
+			Expected: identityv1.NamespaceAccess_PERMISSION_WRITE,
+		},
+		{
+			Name:     "write downgrades to read",
+			Input:    identityv1.NamespaceAccess_PERMISSION_WRITE,
+			Expected: identityv1.NamespaceAccess_PERMISSION_READ,
+		},
+		{
+			Name:     "read downgrades to unspecified (remove access)",
+			Input:    identityv1.NamespaceAccess_PERMISSION_READ,
+			Expected: identityv1.NamespaceAccess_PERMISSION_UNSPECIFIED,
+		},
+		{
+			Name:     "unspecified stays unspecified",
+			Input:    identityv1.NamespaceAccess_PERMISSION_UNSPECIFIED,
+			Expected: identityv1.NamespaceAccess_PERMISSION_UNSPECIFIED,
+		},
+	}
+
+	for _, tc := range tt {
+		t.Run(tc.Name, func(t *testing.T) {
+			t.Parallel()
+			var actual identityv1.NamespaceAccess_Permission
+			require.NotPanics(t, func() {
+				actual = nextLowerNamespacePermission(tc.Input)
+			})
+			assert.Equal(t, tc.Expected, actual)
+		})
+	}
+}
+
+func TestNamespaceAccessPermissionFromString(t *testing.T) {
+	t.Parallel()
+	tt := []struct {
+		Name     string
+		Input    string
+		Expected identityv1.NamespaceAccess_Permission
+	}{
+		{
+			Name:     "admin permission",
+			Input:    "admin",
+			Expected: identityv1.NamespaceAccess_PERMISSION_ADMIN,
+		},
+		{
+			Name:     "write permission",
+			Input:    "write",
+			Expected: identityv1.NamespaceAccess_PERMISSION_WRITE,
+		},
+		{
+			Name:     "read permission",
+			Input:    "read",
+			Expected: identityv1.NamespaceAccess_PERMISSION_READ,
+		},
+		{
+			Name:     "uppercase ADMIN",
+			Input:    "ADMIN",
+			Expected: identityv1.NamespaceAccess_PERMISSION_ADMIN,
+		},
+		{
+			Name:     "mixed case Admin",
+			Input:    "Admin",
+			Expected: identityv1.NamespaceAccess_PERMISSION_ADMIN,
+		},
+		{
+			Name:     "invalid permission returns unspecified",
+			Input:    "invalid",
+			Expected: identityv1.NamespaceAccess_PERMISSION_UNSPECIFIED,
+		},
+		{
+			Name:     "empty string returns unspecified",
+			Input:    "",
+			Expected: identityv1.NamespaceAccess_PERMISSION_UNSPECIFIED,
+		},
+	}
+
+	for _, tc := range tt {
+		t.Run(tc.Name, func(t *testing.T) {
+			t.Parallel()
+			var actual identityv1.NamespaceAccess_Permission
+			require.NotPanics(t, func() {
+				actual = namespaceAccessPermissionFromString(tc.Input)
+			})
+			assert.Equal(t, tc.Expected, actual)
+		})
+	}
+}
+
 func TestAccountAccessRoleFromString(t *testing.T) {
 	t.Parallel()
 	tt := []struct {
