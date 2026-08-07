@@ -35,9 +35,9 @@ func protoUserToResource(proto *identityv1.User) (*v2.Resource, error) {
 
 	user, err := rs.NewUserResource(proto.GetSpec().GetEmail(), userResourceType, proto.GetId(), []rs.UserTraitOption{
 		rs.WithEmail(proto.GetSpec().GetEmail(), true),
-		rs.WithCreatedAt(proto.GetCreatedTime().AsTime()),
 		rs.WithAccountType(v2.UserTrait_ACCOUNT_TYPE_HUMAN),
-	}, rs.WithAnnotation(annos))
+	},
+		rs.WithResourceCreatedAt(proto.GetCreatedTime().AsTime()), rs.WithAnnotation(annos))
 	if err != nil {
 		return nil, err
 	}
@@ -54,9 +54,9 @@ func protoServiceAccountToResource(proto *identityv1.ServiceAccount) (*v2.Resour
 	}
 
 	sa, err := rs.NewUserResource(name, serviceAccountResourceType, proto.GetId(), []rs.UserTraitOption{
-		rs.WithCreatedAt(proto.GetCreatedTime().AsTime()),
 		rs.WithAccountType(v2.UserTrait_ACCOUNT_TYPE_SERVICE),
-	})
+	},
+		rs.WithResourceCreatedAt(proto.GetCreatedTime().AsTime()))
 	if err != nil {
 		return nil, err
 	}
