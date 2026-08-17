@@ -22,6 +22,8 @@ type Connector struct {
 	accountID string
 
 	accountCreationSettings AccountCreationSettings
+
+	syncGroups bool
 }
 
 // ResourceSyncers returns a ResourceSyncer for each resource type that should be synced from the upstream service.
@@ -29,8 +31,9 @@ func (d *Connector) ResourceSyncers(ctx context.Context) []connectorbuilder.Reso
 	return []connectorbuilder.ResourceSyncerV2{
 		newUserBuilder(d.cloudServiceClient, d.accountCreationSettings),
 		newServiceAccountBuilder(d.cloudServiceClient),
-		newNamespaceBuilder(d.cloudServiceClient),
-		newAccountBuilder(d.cloudServiceClient),
+		newNamespaceBuilder(d.cloudServiceClient, d.syncGroups),
+		newGroupBuilder(d.cloudServiceClient),
+		newAccountBuilder(d.cloudServiceClient, d.syncGroups),
 	}
 }
 
@@ -111,6 +114,7 @@ func New(ctx context.Context, tc *cfg.TemporalCloud, opts *cli.ConnectorOpts) (c
 		accountCreationSettings: AccountCreationSettings{
 			DefaultAccountRole: defaultRole,
 		},
+		syncGroups: opts.WillSyncResourceType(groupResourceType.Id),
 	}
 
 	return connector, nil, nil
@@ -130,11 +134,12 @@ type Opt func(*Connector) error
 //	AccountAccess_ROLE_READ: "read", "role_read"
 func WithDefaultAccountRole(role string) Opt {
 	return func(c *Connector) error {
-		r, err := AccountAccessRoleFromString(role)
+		role, err := AccountAccessRoleFromString(role)
 		if err != nil {
 			return err
 		}
-		c.accountCreationSettings.DefaultAccountRole = *r
+
+		c.accountCreationSettings.DefaultAccountRole = *role
 		return nil
 	}
 }
