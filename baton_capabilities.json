@@ -21,6 +21,11 @@
         "displayName": "User Group",
         "traits": [
           "TRAIT_GROUP"
+        ],
+        "annotations": [
+          {
+            "@type": "type.googleapis.com/c1.connector.v2.OptInRequired"
+          }
         ]
       },
       "capabilities": [
@@ -28,7 +33,7 @@
         "CAPABILITY_PROVISION"
       ],
       "permissions": {},
-      "opt_in_required": true
+      "optInRequired": true
     },
     {
       "resourceType": {
