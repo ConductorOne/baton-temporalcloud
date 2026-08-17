@@ -17,6 +17,20 @@
     },
     {
       "resourceType": {
+        "id": "group",
+        "displayName": "User Group",
+        "traits": [
+          "TRAIT_GROUP"
+        ]
+      },
+      "capabilities": [
+        "CAPABILITY_SYNC",
+        "CAPABILITY_PROVISION"
+      ],
+      "permissions": {}
+    },
+    {
+      "resourceType": {
         "id": "namespace",
         "displayName": "Namespace"
       },
