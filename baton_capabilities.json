@@ -27,7 +27,8 @@
         "CAPABILITY_SYNC",
         "CAPABILITY_PROVISION"
       ],
-      "permissions": {}
+      "permissions": {},
+      "opt_in_required": true
     },
     {
       "resourceType": {

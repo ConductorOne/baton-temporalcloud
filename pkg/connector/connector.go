@@ -106,7 +106,6 @@ func New(ctx context.Context, tc *cfg.TemporalCloud, opts *cli.ConnectorOpts) (c
 		}
 		defaultRole = *r
 	}
-
 	connector := &Connector{
 		cloudServiceClient: c,
 		accountCreationSettings: AccountCreationSettings{
