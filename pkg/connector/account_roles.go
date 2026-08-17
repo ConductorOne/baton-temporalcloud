@@ -42,7 +42,8 @@ var accountRoles = []identityv1.AccountAccess_Role{
 }
 
 type accountRoleBuilder struct {
-	client *client.Client
+	client     *client.Client
+	syncGroups bool
 }
 
 func (o *accountRoleBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
@@ -108,10 +109,12 @@ func (o *accountRoleBuilder) Grants(ctx context.Context, r *v2.Resource, opts rs
 			ResourceTypeID: accountRolePhaseUsers,
 			ResourceID:     r.Id.Resource,
 		})
-		bag.Push(pagination.PageState{
-			ResourceTypeID: accountRolePhaseGroups,
-			ResourceID:     r.Id.Resource,
-		})
+		if o.syncGroups {
+			bag.Push(pagination.PageState{
+				ResourceTypeID: accountRolePhaseGroups,
+				ResourceID:     r.Id.Resource,
+			})
+		}
 	}
 
 	var rv []*v2.Grant
@@ -122,7 +125,9 @@ func (o *accountRoleBuilder) Grants(ctx context.Context, r *v2.Resource, opts rs
 	case accountRolePhaseGroups:
 		rv, nextPageToken, err = o.listGroupAccountRoleGrants(ctx, r, accountID, bag)
 	default:
-		return nil, nil, fmt.Errorf("baton-temporalcloud: unexpected account role grants pagination phase %q", bag.ResourceTypeID())
+		// Legacy page states from the previous connector version used the
+		// resource type id as the state marker; treat as the users phase.
+		rv, nextPageToken, err = o.listUserAccountRoleGrants(ctx, r, accountID, bag)
 	}
 	if err != nil {
 		return nil, nil, err
@@ -303,8 +308,8 @@ func (o *accountRoleBuilder) grantAccountRoleToGroup(ctx context.Context, princi
 
 	currentRole := spec.GetAccess().GetAccountAccess().GetRole()
 	if slices.Contains(immutableAccountRoles, currentRole) {
-		zap.L().Info("baton-temporalcloud: group has immutable role, skipping grant", zap.String("group_id", groupID))
-		return nil, nil, nil
+		ctxzap.Extract(ctx).Warn("baton-temporalcloud: group has immutable role, skipping grant", zap.String("group_id", groupID))
+		return nil, nil, fmt.Errorf("baton-temporalcloud: cannot grant role to group %s: group holds immutable account role %s", groupID, accountRoleDisplayName(currentRole))
 	}
 	if currentRole == newRole {
 		return nil, annotations.New(&v2.GrantAlreadyExists{}), nil
@@ -518,8 +523,9 @@ func (o *accountRoleBuilder) revokeAccountRoleFromGroup(ctx context.Context, pri
 	return annos, nil
 }
 
-func newAccountBuilder(client *client.Client) *accountRoleBuilder {
+func newAccountBuilder(client *client.Client, syncGroups bool) *accountRoleBuilder {
 	return &accountRoleBuilder{
-		client: client,
+		client:     client,
+		syncGroups: syncGroups,
 	}
 }

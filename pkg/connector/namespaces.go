@@ -33,7 +33,8 @@ var namespaceAccessLevels = []identityv1.NamespaceAccess_Permission{
 }
 
 type namespaceBuilder struct {
-	client cloudservicev1.CloudServiceClient
+	client     cloudservicev1.CloudServiceClient
+	syncGroups bool
 }
 
 func (o *namespaceBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
@@ -105,10 +106,12 @@ func (o *namespaceBuilder) Grants(ctx context.Context, resource *v2.Resource, op
 			ResourceTypeID: namespacePhaseUsers,
 			ResourceID:     resource.GetId().GetResource(),
 		})
-		bag.Push(pagination.PageState{
-			ResourceTypeID: namespacePhaseGroups,
-			ResourceID:     resource.GetId().GetResource(),
-		})
+		if o.syncGroups {
+			bag.Push(pagination.PageState{
+				ResourceTypeID: namespacePhaseGroups,
+				ResourceID:     resource.GetId().GetResource(),
+			})
+		}
 	}
 
 	var rv []*v2.Grant
@@ -119,7 +122,9 @@ func (o *namespaceBuilder) Grants(ctx context.Context, resource *v2.Resource, op
 	case namespacePhaseGroups:
 		rv, nextPageToken, err = o.listGroupNamespaceGrants(ctx, resource, bag)
 	default:
-		return nil, nil, fmt.Errorf("baton-temporalcloud: unexpected namespace grants pagination phase %q", bag.ResourceTypeID())
+		// Legacy page states from the previous connector version used the
+		// resource type id as the state marker; treat as the users phase.
+		rv, nextPageToken, err = o.listUserNamespaceGrants(ctx, resource, bag)
 	}
 	if err != nil {
 		return nil, nil, err
@@ -352,17 +357,17 @@ func (o *namespaceBuilder) Revoke(ctx context.Context, g *v2.Grant) (annotations
 	namespaceType := namespace.GetId().GetResourceType()
 
 	if principalType == groupResourceType.Id {
-		return o.revokeNamespaceAccessFromGroup(ctx, g, principalID, namespaceID, namespaceType, entitlementID)
+		return o.revokeNamespaceAccessFromGroup(ctx, principalID, namespaceID, namespaceType, entitlementID)
 	}
 
 	if principalType == userResourceType.Id {
-		return o.revokeNamespaceAccessFromUser(ctx, g, principalID, principalType, namespaceID, namespaceType, entitlementID)
+		return o.revokeNamespaceAccessFromUser(ctx, principalID, principalType, namespaceID, namespaceType, entitlementID)
 	}
 	return nil, fmt.Errorf("baton-temporalcloud: unsupported principal type %s", principalType)
 }
 
 func (o *namespaceBuilder) revokeNamespaceAccessFromUser(
-	ctx context.Context, _ *v2.Grant, userID string, userType string,
+	ctx context.Context, userID string, userType string,
 	namespaceID string, namespaceType string, entitlementID string,
 ) (annotations.Annotations, error) {
 	userResp, err := o.client.GetUser(ctx, &cloudservicev1.GetUserRequest{UserId: userID})
@@ -407,7 +412,7 @@ func (o *namespaceBuilder) revokeNamespaceAccessFromUser(
 }
 
 func (o *namespaceBuilder) revokeNamespaceAccessFromGroup(
-	ctx context.Context, _ *v2.Grant, groupID string,
+	ctx context.Context, groupID string,
 	namespaceID string, namespaceType string, entitlementID string,
 ) (annotations.Annotations, error) {
 	groupResp, err := o.client.GetUserGroup(ctx, &cloudservicev1.GetUserGroupRequest{GroupId: groupID})
@@ -453,6 +458,6 @@ func (o *namespaceBuilder) revokeNamespaceAccessFromGroup(
 	return annos, nil
 }
 
-func newNamespaceBuilder(client cloudservicev1.CloudServiceClient) *namespaceBuilder {
-	return &namespaceBuilder{client: client}
+func newNamespaceBuilder(client cloudservicev1.CloudServiceClient, syncGroups bool) *namespaceBuilder {
+	return &namespaceBuilder{client: client, syncGroups: syncGroups}
 }
