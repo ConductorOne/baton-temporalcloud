@@ -38,6 +38,7 @@ baton resources
 `baton-temporalcloud` will pull down information about the following Temporal Cloud resources:
 - Namespaces
 - Users
+- User Groups
 - Account Roles
 
 # Contributing, Support and Issues

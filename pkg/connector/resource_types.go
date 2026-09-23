@@ -22,6 +22,13 @@ var serviceAccountResourceType = &v2.ResourceType{
 	Annotations: annotations.New(&v2.SkipEntitlementsAndGrants{}),
 }
 
+var groupResourceType = &v2.ResourceType{
+	Id:          "group",
+	DisplayName: "User Group",
+	Traits:      []v2.ResourceType_Trait{v2.ResourceType_TRAIT_GROUP},
+	Annotations: annotations.New(&v2.OptInRequired{}),
+}
+
 var namespaceResourceType = &v2.ResourceType{
 	Id:          "namespace",
 	DisplayName: "Namespace",
