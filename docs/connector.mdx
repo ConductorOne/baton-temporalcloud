@@ -243,13 +243,22 @@ key is.
   through the request's vault; if the secret is lost, revoke the key and request
   a new one.
 - Expiry is set on the provider. When the request supplies a lifetime, the
-  connector passes that exact instant to Temporal Cloud. When it does not, the
-  connector applies a **90-day** default. The accepted range is **1 minute to 2
-  years**, matching Temporal Cloud's documented maximum.
+  connector passes that exact instant to Temporal Cloud and reads it back to
+  confirm the provider stored it. When the request supplies none, the connector
+  applies a **90-day** default of its own.
+- The accepted window is **1 minute to 2 years**. The 2-year ceiling is Temporal
+  Cloud's documented maximum; the 1-minute floor is the connector's own, since
+  Temporal Cloud documents no minimum API-key lifetime. The default and the
+  floor are connector policy, not provider limits.
 - Revoking a credential deletes that one API key at Temporal Cloud. The service
   account, its other keys, and its namespace assignments are left untouched. A
   key that is already gone is treated as successfully revoked.
 - Temporal Cloud limits each service account to **20 non-expired API keys**.
   When that limit is reached, issuance fails with the provider's error and no
-  key is created; revoke an existing key and retry. A retried request never
-  creates a second key.
+  key is created; revoke an existing key and retry.
+- A retried request never creates a second key. Each request carries a
+  deterministic identity derived from its C1 request id, and the connector
+  refuses to mint when a credential for that identity already exists. Temporal
+  Cloud returns a key's secret only once, so an existing key cannot be handed
+  back: the connector reports the existing key's id instead, and an operator
+  must revoke it before retrying.

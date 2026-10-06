@@ -37,22 +37,39 @@ const (
 	// apiKeyDefaultTTL is the expiry applied when a request carries none.
 	// Temporal Cloud API keys expire, and the connector does not mint
 	// never-expiring credentials, so an absent caller-selected expiry still
-	// produces a bounded key. 90 days is a deliberately conservative default
-	// well inside the provider maximum.
+	// produces a bounded key. 90 days is this connector's own default: it is
+	// not a provider bound, and it matches the duration cap C1 applies to a
+	// credential request today, so a default-minted key cannot outlive what a
+	// request could have asked for.
 	apiKeyDefaultTTL = 90 * 24 * time.Hour
 
 	// apiKeyMinTTL bounds a caller-selected expiry from below, so an
 	// already-expired or absurdly short key cannot be requested.
+	//
+	// This floor is the CONNECTOR's, not the provider's. Temporal Cloud
+	// documents no minimum API-key lifetime, so nothing here should be read as
+	// a provider constraint; it exists only to reject a request that would
+	// produce a useless credential.
 	apiKeyMinTTL = 1 * time.Minute
 
 	// apiKeyMaxTTL is the provider's documented maximum API-key expiry.
 	// Verified 2026-10-06 against
 	// https://docs.temporal.io/cloud/api-keys ("The maximum expiration time
-	// for an API key is 2 years"). The issue that requested this connector
-	// asserted a 90-day provider maximum; the official documentation says
-	// otherwise, so the enforced ceiling follows the documentation and the
-	// 90-day figure survives only as apiKeyDefaultTTL.
+	// for an API key is 2 years") and
+	// https://docs.temporal.io/cloud/manage-access/service-accounts, and
+	// re-verified independently by the dispatching parent the same day.
+	//
+	// The issue that requested this connector asserted a 90-day provider
+	// maximum; the official documentation says otherwise, so the enforced
+	// ceiling follows the documentation. The 90-day figure survives only as
+	// apiKeyDefaultTTL, which is a connector default, not a provider limit.
 	apiKeyMaxTTL = 2 * 365 * 24 * time.Hour
+
+	// apiKeyExpiryReadbackTolerance is how far the expiry the provider reports
+	// may differ from the one requested before issuance fails. The provider
+	// rounds the instant it stores; the check exists to catch a provider that
+	// ignored or capped the request, not to police rounding.
+	apiKeyExpiryReadbackTolerance = time.Minute
 
 	// apiKeyDeletionMaxDuration bounds the wait for the provider's
 	// asynchronous delete of a vended key.

@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -65,6 +66,104 @@ type capabilityProvider interface {
 	GetCapabilities(context.Context) (*v2.ConnectorCapabilities, error)
 }
 
+// issuanceFake is a provider stub for the issuance path with every answer
+// defaulted to a successful, verified mint. A test overrides only the answer it
+// is about.
+type issuanceFake struct {
+	*fakeCloudService
+
+	ownerID   string
+	expiresAt time.Time
+	token     string
+	keyID     string
+
+	// Provider answers a test may override.
+	opState    operationv1.AsyncOperation_State
+	opFound    bool
+	existing   []*identityv1.ApiKey
+	record     *identityv1.ApiKey
+	createErr  error
+	noSecret   bool
+	createGate func()
+	created    []*cloudservicev1.CreateApiKeyRequest
+	deleted    []*cloudservicev1.DeleteApiKeyRequest
+}
+
+func newIssuanceFake(t *testing.T, ownerID string, expiresAt time.Time) *issuanceFake {
+	t.Helper()
+	f := &issuanceFake{
+		ownerID:   ownerID,
+		expiresAt: expiresAt,
+		token:     "vended-secret",
+		keyID:     "key-1",
+	}
+	f.fakeCloudService = &fakeCloudService{
+		getAsyncOp: func(_ context.Context, in *cloudservicev1.GetAsyncOperationRequest) (*cloudservicev1.GetAsyncOperationResponse, error) {
+			require.NotEmpty(t, in.GetAsyncOperationId(), "every issuance must carry a request identity")
+			if !f.opFound {
+				return nil, status.Error(codes.NotFound, "operation not found")
+			}
+			return &cloudservicev1.GetAsyncOperationResponse{AsyncOperation: &operationv1.AsyncOperation{
+				Id:    in.GetAsyncOperationId(),
+				State: f.opState,
+			}}, nil
+		},
+		getApiKeys: func(context.Context, *cloudservicev1.GetApiKeysRequest) (*cloudservicev1.GetApiKeysResponse, error) {
+			return &cloudservicev1.GetApiKeysResponse{ApiKeys: f.existing}, nil
+		},
+		createApiKey: func(_ context.Context, in *cloudservicev1.CreateApiKeyRequest) (*cloudservicev1.CreateApiKeyResponse, error) {
+			f.created = append(f.created, in)
+			if f.createGate != nil {
+				f.createGate()
+			}
+			if f.createErr != nil {
+				return nil, f.createErr
+			}
+			token := f.token
+			if f.noSecret {
+				token = ""
+			}
+			return &cloudservicev1.CreateApiKeyResponse{KeyId: f.keyID, Token: token}, nil
+		},
+		getApiKey: func(_ context.Context, in *cloudservicev1.GetApiKeyRequest) (*cloudservicev1.GetApiKeyResponse, error) {
+			if f.record != nil {
+				return &cloudservicev1.GetApiKeyResponse{ApiKey: f.record}, nil
+			}
+			// A provider that accepted the create is the case these tests are
+			// not about, so the readback echoes what was asked for. A test that
+			// wants a disagreement sets f.record.
+			spec := &identityv1.ApiKeySpec{
+				OwnerId:     f.ownerID,
+				OwnerType:   identityv1.OwnerType_OWNER_TYPE_SERVICE_ACCOUNT,
+				DisplayName: issuedCredentialName("req-1"),
+			}
+			if n := len(f.created); n > 0 {
+				spec = proto.Clone(f.created[n-1].GetSpec()).(*identityv1.ApiKeySpec)
+			} else if !f.expiresAt.IsZero() {
+				spec.ExpiryTime = timestamppb.New(f.expiresAt)
+			}
+			return &cloudservicev1.GetApiKeyResponse{ApiKey: &identityv1.ApiKey{
+				Id:              in.GetKeyId(),
+				ResourceVersion: "v1",
+				Spec:            spec,
+			}}, nil
+		},
+		deleteApiKey: func(_ context.Context, in *cloudservicev1.DeleteApiKeyRequest) (*cloudservicev1.DeleteApiKeyResponse, error) {
+			f.deleted = append(f.deleted, in)
+			return &cloudservicev1.DeleteApiKeyResponse{}, nil
+		},
+	}
+	return f
+}
+
+func (f *issuanceFake) issue(ctx context.Context, requestID string) (*connectorbuilder.CredentialIssueOutput, error) {
+	return newServiceAccountBuilder(f.fakeCloudService).Issue(ctx, &connectorbuilder.CredentialIssueInput{
+		IdentityID:        &v2.ResourceId{ResourceType: serviceAccountResourceType.Id, Resource: f.ownerID},
+		CredentialOptions: apiKeyIssueOptions(),
+		RequestID:         requestID,
+	})
+}
+
 // TestCapabilitiesAdvertiseRevocableAPIKey proves the connector's declaration
 // survives the SDK's own validation. That check is the one that rejects an
 // issuance descriptor whose secret resource type has no ResourceDeleterV2, so
@@ -124,40 +223,25 @@ func capsHasCapability(caps *v2.ConnectorCapabilities, want v2.Capability) bool 
 
 // TestIssueAPIKeyForServiceAccount covers the happy path: the key is created
 // for the requested service account, owned by that account, bounded by the
-// connector's default TTL, and returned as an api-key secret whose trait names
-// the authenticating identity.
+// connector's default TTL, verified against the provider's own record, and
+// returned as an api-key secret whose trait names the authenticating identity.
 func TestIssueAPIKeyForServiceAccount(t *testing.T) {
 	t.Parallel()
 
-	var created *cloudservicev1.CreateApiKeyRequest
-	fake := &fakeCloudService{
-		getApiKeys: func(_ context.Context, in *cloudservicev1.GetApiKeysRequest) (*cloudservicev1.GetApiKeysResponse, error) {
-			require.Equal(t, "sa-1", in.GetOwnerId())
-			require.Equal(t, identityv1.OwnerType_OWNER_TYPE_SERVICE_ACCOUNT, in.GetOwnerType())
-			return &cloudservicev1.GetApiKeysResponse{}, nil
-		},
-		createApiKey: func(_ context.Context, in *cloudservicev1.CreateApiKeyRequest) (*cloudservicev1.CreateApiKeyResponse, error) {
-			created = in
-			return &cloudservicev1.CreateApiKeyResponse{KeyId: "key-1", Token: "vended-secret"}, nil
-		},
-	}
-
-	identity := &v2.ResourceId{ResourceType: serviceAccountResourceType.Id, Resource: "sa-1"}
 	before := time.Now()
-	out, err := newServiceAccountBuilder(fake).Issue(context.Background(), &connectorbuilder.CredentialIssueInput{
-		IdentityID:        identity,
-		CredentialOptions: apiKeyIssueOptions(),
-		RequestID:         "req-1",
-	})
+	fake := newIssuanceFake(t, "sa-1", before.Add(apiKeyDefaultTTL).Truncate(time.Second))
+	out, err := fake.issue(context.Background(), "req-1")
 	require.NoError(t, err)
 
-	require.NotNil(t, created)
-	spec := created.GetSpec()
+	require.Len(t, fake.created, 1)
+	spec := fake.created[0].GetSpec()
 	require.Equal(t, "sa-1", spec.GetOwnerId())
 	require.Equal(t, identityv1.OwnerType_OWNER_TYPE_SERVICE_ACCOUNT, spec.GetOwnerType())
 	require.Equal(t, "c1-req-1", spec.GetDisplayName())
 	require.NotEmpty(t, spec.GetDescription())
 	require.WithinDuration(t, before.Add(apiKeyDefaultTTL), spec.GetExpiryTime().AsTime(), time.Minute)
+	require.Equal(t, apiKeyOperationID("req-1"), fake.created[0].GetAsyncOperationId(),
+		"the create must carry the request identity a retry can observe")
 
 	require.NotNil(t, out)
 	require.Equal(t, apiKeyResourceType.Id, out.Secret.GetId().GetResourceType())
@@ -167,6 +251,7 @@ func TestIssueAPIKeyForServiceAccount(t *testing.T) {
 	require.Equal(t, "api_key", out.PlaintextData[0].GetName())
 	require.Equal(t, "vended-secret", string(out.PlaintextData[0].GetBytes()))
 
+	identity := &v2.ResourceId{ResourceType: serviceAccountResourceType.Id, Resource: "sa-1"}
 	trait := secretTrait(t, out.Secret)
 	require.True(t, proto.Equal(identity, trait.GetIdentityId()), "secret trait identity must be the requested service account")
 	require.Equal(t, v2.SecretTrait_CREDENTIAL_TYPE_STATIC_SECRET, trait.GetCredentialType())
@@ -182,19 +267,9 @@ func TestIssueAPIKeyForServiceAccount(t *testing.T) {
 func TestIssueAPIKeyHonoursRequestedExpiry(t *testing.T) {
 	t.Parallel()
 
-	var created *cloudservicev1.CreateApiKeyRequest
-	fake := &fakeCloudService{
-		getApiKeys: func(context.Context, *cloudservicev1.GetApiKeysRequest) (*cloudservicev1.GetApiKeysResponse, error) {
-			return &cloudservicev1.GetApiKeysResponse{}, nil
-		},
-		createApiKey: func(_ context.Context, in *cloudservicev1.CreateApiKeyRequest) (*cloudservicev1.CreateApiKeyResponse, error) {
-			created = in
-			return &cloudservicev1.CreateApiKeyResponse{KeyId: "key-2", Token: "tok"}, nil
-		},
-	}
-
 	requested := time.Now().Add(6 * time.Hour).Truncate(time.Second)
-	out, err := newServiceAccountBuilder(fake).Issue(context.Background(), &connectorbuilder.CredentialIssueInput{
+	fake := newIssuanceFake(t, "sa-1", requested)
+	out, err := newServiceAccountBuilder(fake.fakeCloudService).Issue(context.Background(), &connectorbuilder.CredentialIssueInput{
 		IdentityID:        &v2.ResourceId{ResourceType: serviceAccountResourceType.Id, Resource: "sa-1"},
 		CredentialOptions: apiKeyIssueOptions(),
 		ExpiresAt:         timestamppb.New(requested),
@@ -202,7 +277,8 @@ func TestIssueAPIKeyHonoursRequestedExpiry(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	require.True(t, requested.Equal(created.GetSpec().GetExpiryTime().AsTime()), "requested expiry must reach the provider unchanged")
+	require.True(t, requested.Equal(fake.created[0].GetSpec().GetExpiryTime().AsTime()),
+		"requested expiry must reach the provider unchanged")
 	require.True(t, requested.Equal(secretTrait(t, out.Secret).GetExpiresAt().AsTime()))
 }
 
@@ -222,50 +298,237 @@ func TestIssueAPIKeyRejectsRequestedExpiryOutsideProviderLimits(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			fake := &fakeCloudService{
-				getApiKeys: func(context.Context, *cloudservicev1.GetApiKeysRequest) (*cloudservicev1.GetApiKeysResponse, error) {
-					return &cloudservicev1.GetApiKeysResponse{}, nil
-				},
-				createApiKey: func(context.Context, *cloudservicev1.CreateApiKeyRequest) (*cloudservicev1.CreateApiKeyResponse, error) {
-					t.Fatal("no key may be created for an out-of-range expiry")
-					return nil, nil
-				},
-			}
-			_, err := newServiceAccountBuilder(fake).Issue(context.Background(), &connectorbuilder.CredentialIssueInput{
+			fake := newIssuanceFake(t, "sa-1", tc.expiresAt)
+			_, err := newServiceAccountBuilder(fake.fakeCloudService).Issue(context.Background(), &connectorbuilder.CredentialIssueInput{
 				IdentityID:        &v2.ResourceId{ResourceType: serviceAccountResourceType.Id, Resource: "sa-1"},
 				CredentialOptions: apiKeyIssueOptions(),
 				ExpiresAt:         timestamppb.New(tc.expiresAt),
 				RequestID:         "req-bounds",
 			})
 			require.Equal(t, codes.InvalidArgument, status.Code(err))
+			require.Empty(t, fake.created, "no key may be created for an out-of-range expiry")
 		})
 	}
 }
 
-// TestIssueAPIKeyRefusesDuplicateRequest covers retry safety: a request whose
-// provider-side key already exists must not mint a second one.
+// TestIssueAPIKeyRefusesDuplicateRequest covers the retry case where the
+// provider's key listing already shows the predecessor's key.
 func TestIssueAPIKeyRefusesDuplicateRequest(t *testing.T) {
 	t.Parallel()
 
-	fake := &fakeCloudService{
-		getApiKeys: func(context.Context, *cloudservicev1.GetApiKeysRequest) (*cloudservicev1.GetApiKeysResponse, error) {
-			return &cloudservicev1.GetApiKeysResponse{ApiKeys: []*identityv1.ApiKey{
-				{Id: "key-existing", Spec: &identityv1.ApiKeySpec{OwnerId: "sa-1", DisplayName: "c1-req-dup"}},
-			}}, nil
-		},
-		createApiKey: func(context.Context, *cloudservicev1.CreateApiKeyRequest) (*cloudservicev1.CreateApiKeyResponse, error) {
-			t.Fatal("a duplicate request must not create a second key")
-			return nil, nil
-		},
+	fake := newIssuanceFake(t, "sa-1", time.Now().Add(time.Hour))
+	fake.existing = []*identityv1.ApiKey{
+		{Id: "key-existing", Spec: &identityv1.ApiKeySpec{OwnerId: "sa-1", DisplayName: "c1-req-dup"}},
 	}
-
-	_, err := newServiceAccountBuilder(fake).Issue(context.Background(), &connectorbuilder.CredentialIssueInput{
-		IdentityID:        &v2.ResourceId{ResourceType: serviceAccountResourceType.Id, Resource: "sa-1"},
-		CredentialOptions: apiKeyIssueOptions(),
-		RequestID:         "req-dup",
-	})
+	_, err := fake.issue(context.Background(), "req-dup")
 	require.Equal(t, codes.AlreadyExists, status.Code(err))
 	require.ErrorContains(t, err, "key-existing")
+	require.Empty(t, fake.created, "a duplicate request must not create a second key")
+	require.Empty(t, fake.deleted,
+		"the existing key must not be deleted: the connector cannot prove its secret was never delivered")
+}
+
+// TestIssueAPIKeyRefusesWhenOperationAlreadyFulfilled covers the case the key
+// listing cannot see: a previous attempt created the key, its response was
+// lost, and the provider's listing has not caught up. The provider's own
+// operation record is the signal that survives that.
+func TestIssueAPIKeyRefusesWhenOperationAlreadyFulfilled(t *testing.T) {
+	t.Parallel()
+
+	fake := newIssuanceFake(t, "sa-1", time.Now().Add(time.Hour))
+	fake.opFound = true
+	fake.opState = operationv1.AsyncOperation_STATE_FULFILLED
+	// The listing lags: it does not show the key the operation created.
+	fake.existing = nil
+
+	_, err := fake.issue(context.Background(), "req-lost")
+	require.Equal(t, codes.AlreadyExists, status.Code(err))
+	require.ErrorContains(t, err, "could not be located",
+		"the error must say the handle was unavailable rather than invent one")
+	require.Empty(t, fake.created, "a fulfilled operation must not be followed by a second create")
+}
+
+// TestIssueAPIKeyRefusesWhenOperationInFlight covers the concurrent case from
+// the connector's side: another attempt for the same request is mid-flight, so
+// this one must not mint a second key.
+func TestIssueAPIKeyRefusesWhenOperationInFlight(t *testing.T) {
+	t.Parallel()
+
+	fake := newIssuanceFake(t, "sa-1", time.Now().Add(time.Hour))
+	fake.opFound = true
+	fake.opState = operationv1.AsyncOperation_STATE_IN_PROGRESS
+
+	_, err := fake.issue(context.Background(), "req-inflight")
+	require.Equal(t, codes.AlreadyExists, status.Code(err))
+	require.Empty(t, fake.created)
+}
+
+// TestIssueAPIKeyAllowsRetryAfterFailedOperation proves a request whose earlier
+// attempt genuinely failed can still mint: a failed operation created nothing,
+// so refusing would strand the request forever.
+func TestIssueAPIKeyAllowsRetryAfterFailedOperation(t *testing.T) {
+	t.Parallel()
+
+	fake := newIssuanceFake(t, "sa-1", time.Now().Add(time.Hour))
+	fake.opFound = true
+	fake.opState = operationv1.AsyncOperation_STATE_FAILED
+
+	out, err := fake.issue(context.Background(), "req-retry")
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.Len(t, fake.created, 1)
+}
+
+// TestIssueAPIKeyConcurrentAttemptsShareOneRequestIdentity pins the one thing
+// the connector controls about concurrency.
+//
+// Both attempts are gated so both pass the pre-checks before either creates --
+// the worst case for a list-then-create guard. The connector cannot make the
+// two creates atomic; what it can do is make them indistinguishable to the
+// provider by sending the same request identity. Whether the provider collapses
+// them is the provider's contract, and Temporal Cloud documents no such
+// guarantee: this test asserts the invariant the connector owns, not a
+// deduplication the connector cannot enforce.
+func TestIssueAPIKeyConcurrentAttemptsShareOneRequestIdentity(t *testing.T) {
+	t.Parallel()
+
+	var barrier sync.WaitGroup
+	barrier.Add(2)
+	fake := newIssuanceFake(t, "sa-1", time.Now().Add(time.Hour))
+	fake.createGate = func() { barrier.Done(); barrier.Wait() }
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = fake.issue(context.Background(), "req-concurrent")
+		}()
+	}
+	wg.Wait()
+
+	require.Len(t, fake.created, 2, "both gated attempts reach the provider")
+	require.Equal(t, fake.created[0].GetAsyncOperationId(), fake.created[1].GetAsyncOperationId(),
+		"concurrent attempts must present the same request identity to the provider")
+	require.Equal(t, fake.created[0].GetSpec().GetDisplayName(), fake.created[1].GetSpec().GetDisplayName())
+	require.Equal(t, apiKeyOperationID("req-concurrent"), fake.created[0].GetAsyncOperationId())
+	for _, err := range errs {
+		require.NoError(t, err)
+	}
+}
+
+// TestIssueAPIKeyRejectsUnverifiedProviderRecord proves the connector does not
+// trust what it asked for: the provider's own readback must agree on owner and
+// expiry before a credential is returned, and a disagreement rolls the key back.
+func TestIssueAPIKeyRejectsUnverifiedProviderRecord(t *testing.T) {
+	t.Parallel()
+
+	expiresAt := time.Now().Add(4 * time.Hour).Truncate(time.Second)
+
+	for _, tc := range []struct {
+		name   string
+		record *identityv1.ApiKey
+	}{
+		{
+			name: "owner mismatch",
+			record: &identityv1.ApiKey{Id: "key-1", Spec: &identityv1.ApiKeySpec{
+				OwnerId: "someone-else", OwnerType: identityv1.OwnerType_OWNER_TYPE_SERVICE_ACCOUNT,
+				ExpiryTime: timestamppb.New(expiresAt),
+			}},
+		},
+		{
+			name: "owner is not a service account",
+			record: &identityv1.ApiKey{Id: "key-1", Spec: &identityv1.ApiKeySpec{
+				OwnerId: "sa-1", OwnerType: identityv1.OwnerType_OWNER_TYPE_USER,
+				ExpiryTime: timestamppb.New(expiresAt),
+			}},
+		},
+		{
+			name: "expiry ignored by provider",
+			record: &identityv1.ApiKey{Id: "key-1", Spec: &identityv1.ApiKeySpec{
+				OwnerId: "sa-1", OwnerType: identityv1.OwnerType_OWNER_TYPE_SERVICE_ACCOUNT,
+				ExpiryTime: timestamppb.New(expiresAt.Add(30 * 24 * time.Hour)),
+			}},
+		},
+		{
+			name: "no expiry recorded",
+			record: &identityv1.ApiKey{Id: "key-1", Spec: &identityv1.ApiKeySpec{
+				OwnerId: "sa-1", OwnerType: identityv1.OwnerType_OWNER_TYPE_SERVICE_ACCOUNT,
+			}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			fake := newIssuanceFake(t, "sa-1", expiresAt)
+			fake.record = tc.record
+			out, err := newServiceAccountBuilder(fake.fakeCloudService).Issue(context.Background(), &connectorbuilder.CredentialIssueInput{
+				IdentityID:        &v2.ResourceId{ResourceType: serviceAccountResourceType.Id, Resource: "sa-1"},
+				CredentialOptions: apiKeyIssueOptions(),
+				ExpiresAt:         timestamppb.New(expiresAt),
+				RequestID:         "req-unverified",
+			})
+			require.Error(t, err)
+			require.Nil(t, out, "an unverified provider record must not be returned as a credential")
+			require.Len(t, fake.deleted, 1, "the unverifiable key must be rolled back")
+			require.Equal(t, "key-1", fake.deleted[0].GetKeyId())
+		})
+	}
+}
+
+// TestIssueAPIKeyRollsBackWhenProviderReturnsNoSecret covers a response that
+// names a key but carries no secret: the key is unusable and undeliverable, so
+// it is removed rather than left holding one of the account's limited slots.
+func TestIssueAPIKeyRollsBackWhenProviderReturnsNoSecret(t *testing.T) {
+	t.Parallel()
+
+	fake := newIssuanceFake(t, "sa-1", time.Now().Add(time.Hour))
+	fake.noSecret = true
+
+	out, err := fake.issue(context.Background(), "req-nosecret")
+	require.Error(t, err)
+	require.Nil(t, out)
+	require.Len(t, fake.deleted, 1)
+	require.Equal(t, "key-1", fake.deleted[0].GetKeyId())
+	require.NotContains(t, err.Error(), "vended-secret", "an error must never carry credential material")
+}
+
+// TestIssueAPIKeyRollbackSurvivesCanceledContext proves cleanup is attempted
+// even when the caller's context is already done, and that the original cause
+// survives a cleanup failure instead of being replaced by it.
+func TestIssueAPIKeyRollbackSurvivesCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	t.Run("cleanup succeeds despite a canceled caller", func(t *testing.T) {
+		t.Parallel()
+
+		fake := newIssuanceFake(t, "sa-1", time.Now().Add(time.Hour))
+		fake.noSecret = true
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, err := fake.issue(ctx, "req-canceled")
+		require.Error(t, err)
+		require.Len(t, fake.deleted, 1, "cleanup must not be abandoned because the caller gave up")
+	})
+
+	t.Run("cleanup failure preserves the original cause", func(t *testing.T) {
+		t.Parallel()
+
+		fake := newIssuanceFake(t, "sa-1", time.Now().Add(time.Hour))
+		fake.noSecret = true
+		fake.deleteApiKey = func(context.Context, *cloudservicev1.DeleteApiKeyRequest) (*cloudservicev1.DeleteApiKeyResponse, error) {
+			return nil, status.Error(codes.PermissionDenied, "not authorized to delete")
+		}
+
+		_, err := fake.issue(context.Background(), "req-cleanupfail")
+		require.Error(t, err)
+		require.ErrorContains(t, err, "provider returned an API key with no secret",
+			"the original cause must survive a cleanup failure")
+		require.ErrorContains(t, err, "may remain at the provider",
+			"the caller must be told a key may have been left behind")
+	})
 }
 
 // TestIssueAPIKeyRejectsUnexpectedRequests keeps the arm honest for a caller
@@ -273,11 +536,11 @@ func TestIssueAPIKeyRefusesDuplicateRequest(t *testing.T) {
 func TestIssueAPIKeyRejectsUnexpectedRequests(t *testing.T) {
 	t.Parallel()
 
-	builder := newServiceAccountBuilder(&fakeCloudService{})
+	fake := newIssuanceFake(t, "sa-1", time.Now().Add(time.Hour))
 
 	t.Run("non-service-account identity", func(t *testing.T) {
 		t.Parallel()
-		_, err := builder.Issue(context.Background(), &connectorbuilder.CredentialIssueInput{
+		_, err := newServiceAccountBuilder(fake.fakeCloudService).Issue(context.Background(), &connectorbuilder.CredentialIssueInput{
 			IdentityID:        &v2.ResourceId{ResourceType: userResourceType.Id, Resource: "u-1"},
 			CredentialOptions: apiKeyIssueOptions(),
 			RequestID:         "req-3",
@@ -287,7 +550,7 @@ func TestIssueAPIKeyRejectsUnexpectedRequests(t *testing.T) {
 
 	t.Run("unknown secret resource type", func(t *testing.T) {
 		t.Parallel()
-		_, err := builder.Issue(context.Background(), &connectorbuilder.CredentialIssueInput{
+		_, err := newServiceAccountBuilder(fake.fakeCloudService).Issue(context.Background(), &connectorbuilder.CredentialIssueInput{
 			IdentityID: &v2.ResourceId{ResourceType: serviceAccountResourceType.Id, Resource: "sa-1"},
 			CredentialOptions: v2.CredentialIssueOptions_builder{
 				SecretResourceTypeId: "something-else",

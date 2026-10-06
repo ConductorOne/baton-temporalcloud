@@ -20,6 +20,7 @@ import (
 
 	cloudservicev1 "go.temporal.io/cloud-sdk/api/cloudservice/v1"
 	identityv1 "go.temporal.io/cloud-sdk/api/identity/v1"
+	operationv1 "go.temporal.io/cloud-sdk/api/operation/v1"
 )
 
 var _ connectorbuilder.ResourceSyncerV2 = (*serviceAccountBuilder)(nil)
@@ -116,18 +117,34 @@ func (o *serviceAccountBuilder) IssueCapabilityDetails(_ context.Context) (*v2.C
 // account. It never creates or modifies an identity: the owner must already
 // exist and be synced, and the key inherits the owner's permissions.
 //
-// Idempotency is by provider-side name. The key's display name is derived from
-// the C1 request id, and an existing key with that name is refused rather than
-// duplicated. Temporal Cloud returns a key's secret exactly once, at creation,
-// so an existing key cannot be handed back: failing closed is the only
-// duplicate-free answer, and it keeps a retried request at exactly one
-// provider credential.
+// # Request identity
 //
-// The create is deliberately not awaited to completion. The response already
-// carries the key id and secret, and a create whose wait timed out would leave
-// a key this call can never return -- an orphan the retry would then refuse as
-// a duplicate. Returning the provider's own answer keeps "created" and
-// "returned" the same event.
+// Every provider request this connector makes carries a deterministic async
+// operation id derived from the C1 request id. Temporal Cloud documents that
+// field only as "the id to use for this async operation"; it documents no
+// replay or deduplication on it. The connector therefore treats it as a request
+// identity it can OBSERVE after the fact rather than as a guarantee. Before
+// creating anything it asks the provider whether that operation already exists,
+// which detects a create whose response was lost even when the provider's key
+// listing has not caught up yet. Whether two concurrent creates with the same
+// operation id collapse into one key is the provider's contract, not this
+// connector's: the connector supplies the identity and does not rely on it.
+//
+// # Why a retry cannot re-deliver
+//
+// Temporal Cloud returns a key's secret exactly once, at creation, and its API
+// exposes no way to read it back. An existing key for this request identity can
+// therefore never be handed to the caller. The connector refuses rather than
+// minting a second key, and it does NOT delete the existing one: it cannot
+// prove the earlier attempt's secret was never delivered, and deleting a
+// delivered credential would be a silent revocation. The error names the key so
+// an operator can revoke it and retry.
+//
+// # Why the create is not awaited
+//
+// The response already carries the key id and secret, and a create whose wait
+// timed out would leave a key this call can never return. Returning the
+// provider's own answer keeps "created" and "returned" the same event.
 func (o *serviceAccountBuilder) Issue(ctx context.Context, input *connectorbuilder.CredentialIssueInput) (*connectorbuilder.CredentialIssueOutput, error) {
 	if input == nil || input.IdentityID == nil || input.IdentityID.GetResourceType() != serviceAccountResourceType.Id {
 		return nil, status.Error(codes.InvalidArgument, "baton-temporalcloud: a Temporal Cloud service account identity is required")
@@ -147,14 +164,28 @@ func (o *serviceAccountBuilder) Issue(ctx context.Context, input *connectorbuild
 	}
 
 	name := issuedCredentialName(input.RequestID)
+	opID := apiKeyOperationID(input.RequestID)
+
+	// The provider's own operation record is the only signal that survives a
+	// lost create response, and unlike the key listing it does not lag.
+	fulfilled, err := o.apiKeyOperationFulfilled(ctx, opID)
+	if err != nil {
+		return nil, err
+	}
+	if fulfilled {
+		existing, lookupErr := o.findAPIKeyByName(ctx, ownerID, name)
+		if lookupErr != nil {
+			return nil, lookupErr
+		}
+		return nil, apiKeyAlreadyIssuedError(input.RequestID, ownerID, existing)
+	}
+
 	existing, err := o.findAPIKeyByName(ctx, ownerID, name)
 	if err != nil {
 		return nil, err
 	}
 	if existing != "" {
-		return nil, status.Errorf(codes.AlreadyExists,
-			"baton-temporalcloud: an API key for request %q already exists for service account %q (key %s); refusing to issue a duplicate",
-			input.RequestID, ownerID, existing)
+		return nil, apiKeyAlreadyIssuedError(input.RequestID, ownerID, existing)
 	}
 
 	resp, err := o.client.CreateApiKey(ctx, &cloudservicev1.CreateApiKeyRequest{
@@ -165,6 +196,7 @@ func (o *serviceAccountBuilder) Issue(ctx context.Context, input *connectorbuild
 			Description: fmt.Sprintf("ConductorOne vended credential for request %s", input.RequestID),
 			ExpiryTime:  timestamppb.New(expiresAt),
 		},
+		AsyncOperationId: opID,
 	})
 	if err != nil {
 		return nil, apiKeyCreateError(err)
@@ -172,6 +204,16 @@ func (o *serviceAccountBuilder) Issue(ctx context.Context, input *connectorbuild
 	keyID := resp.GetKeyId()
 	if keyID == "" {
 		return nil, status.Error(codes.Internal, "baton-temporalcloud: provider returned an API key with no id")
+	}
+	if resp.GetToken() == "" {
+		return nil, o.rollbackCreatedAPIKey(ctx, keyID, ownerID,
+			status.Error(codes.Internal, "baton-temporalcloud: provider returned an API key with no secret"))
+	}
+
+	// The provider's own record is the authority for owner and expiry. What
+	// this connector asked for is not evidence of what the provider stored.
+	if err := o.verifyIssuedAPIKey(ctx, keyID, ownerID, expiresAt); err != nil {
+		return nil, o.rollbackCreatedAPIKey(ctx, keyID, ownerID, err)
 	}
 
 	secret, err := rs.NewSecretResource(name, apiKeyResourceType, keyID, []rs.SecretTraitOption{
@@ -184,18 +226,8 @@ func (o *serviceAccountBuilder) Issue(ctx context.Context, input *connectorbuild
 		rs.WithSecretExpiresAt(expiresAt),
 	}, rs.WithParentResourceID(input.IdentityID), rs.WithResourceCreatedAt(now))
 	if err != nil {
-		// The key exists at the provider but cannot be returned. Leaving it
-		// would consume one of the service account's limited key slots with a
-		// credential nobody can use, so the mint is rolled back.
-		if _, deleteErr := o.client.DeleteApiKey(ctx, &cloudservicev1.DeleteApiKeyRequest{KeyId: keyID}); deleteErr != nil {
-			ctxzap.Extract(ctx).Warn(
-				"baton-temporalcloud: failed to clean up API key after resource construction error",
-				zap.String("api_key_id", keyID),
-				zap.String("service_account_id", ownerID),
-				zap.Error(deleteErr),
-			)
-		}
-		return nil, fmt.Errorf("baton-temporalcloud: build API key secret resource: %w", err)
+		return nil, o.rollbackCreatedAPIKey(ctx, keyID, ownerID,
+			fmt.Errorf("baton-temporalcloud: build API key secret resource: %w", err))
 	}
 
 	return &connectorbuilder.CredentialIssueOutput{
@@ -207,10 +239,130 @@ func (o *serviceAccountBuilder) Issue(ctx context.Context, input *connectorbuild
 	}, nil
 }
 
+// apiKeyOperationFulfilled reports whether the provider already holds a
+// completed operation for this request identity. NotFound is the expected
+// answer for a first attempt. A pending or in-progress operation counts as
+// "already issued": another attempt for the same request is in flight, and
+// minting a second key would be exactly the duplicate this check exists to
+// prevent.
+func (o *serviceAccountBuilder) apiKeyOperationFulfilled(ctx context.Context, opID string) (bool, error) {
+	resp, err := o.client.GetAsyncOperation(ctx, &cloudservicev1.GetAsyncOperationRequest{AsyncOperationId: opID})
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return false, nil
+		}
+		return false, fmt.Errorf("baton-temporalcloud: failed to read async operation %q: %w", opID, err)
+	}
+	switch resp.GetAsyncOperation().GetState() {
+	case operationv1.AsyncOperation_STATE_FAILED, operationv1.AsyncOperation_STATE_CANCELLED:
+		// A failed operation created nothing, so this request may still mint.
+		return false, nil
+	default:
+		return true, nil
+	}
+}
+
+// verifyIssuedAPIKey confirms from the provider's own record that the key it
+// created belongs to the requested service account and carries the expiry that
+// was requested.
+//
+// The expiry comparison allows a minute of slack because the provider rounds
+// the instant it stores; the check exists to catch a provider that ignored or
+// capped the request, not to police sub-second rounding.
+func (o *serviceAccountBuilder) verifyIssuedAPIKey(ctx context.Context, keyID, ownerID string, expiresAt time.Time) error {
+	resp, err := o.client.GetApiKey(ctx, &cloudservicev1.GetApiKeyRequest{KeyId: keyID})
+	if err != nil {
+		return fmt.Errorf("baton-temporalcloud: failed to read back issued API key %q: %w", keyID, err)
+	}
+	spec := resp.GetApiKey().GetSpec()
+	if spec.GetOwnerId() != ownerID {
+		return status.Errorf(codes.Internal,
+			"baton-temporalcloud: provider recorded API key %q against owner %q, not the requested %q", keyID, spec.GetOwnerId(), ownerID)
+	}
+	if spec.GetOwnerType() != identityv1.OwnerType_OWNER_TYPE_SERVICE_ACCOUNT {
+		return status.Errorf(codes.Internal,
+			"baton-temporalcloud: provider recorded API key %q against owner type %s, not a service account", keyID, spec.GetOwnerType())
+	}
+	providerExpiry := spec.GetExpiryTime()
+	if providerExpiry == nil {
+		return status.Errorf(codes.Internal, "baton-temporalcloud: provider recorded API key %q with no expiry", keyID)
+	}
+	if delta := providerExpiry.AsTime().Sub(expiresAt); delta > apiKeyExpiryReadbackTolerance || delta < -apiKeyExpiryReadbackTolerance {
+		return status.Errorf(codes.Internal,
+			"baton-temporalcloud: provider recorded API key %q expiring at %s, not the requested %s",
+			keyID, providerExpiry.AsTime().UTC(), expiresAt.UTC())
+	}
+	return nil
+}
+
+// rollbackCreatedAPIKey deletes a key this call created but cannot deliver, and
+// returns cause unchanged when cleanup succeeds.
+//
+// A cleanup failure never replaces the original cause: the caller must still
+// learn why issuance failed. It is appended instead, so an operator is also
+// told that a key may remain at the provider. The delete is awaited, and the
+// wait deliberately outlives a canceled or expired caller context -- cleanup
+// must not be abandoned because the request that triggered it was.
+func (o *serviceAccountBuilder) rollbackCreatedAPIKey(ctx context.Context, keyID, ownerID string, cause error) error {
+	resp, err := o.client.DeleteApiKey(ctx, &cloudservicev1.DeleteApiKeyRequest{KeyId: keyID})
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return cause
+		}
+		ctxzap.Extract(ctx).Warn(
+			"baton-temporalcloud: failed to clean up API key after issuance failure",
+			zap.String("api_key_id", keyID),
+			zap.String("service_account_id", ownerID),
+			zap.Error(err),
+		)
+		return fmt.Errorf("%w (cleanup failed: API key %s for service account %s may remain at the provider: %v)", cause, keyID, ownerID, err)
+	}
+	opID := resp.GetAsyncOperation().GetId()
+	if opID == "" {
+		return cause
+	}
+	waitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), apiKeyDeletionMaxDuration)
+	defer cancel()
+	l := ctxzap.Extract(ctx).With(zap.String("request_id", opID), zap.String("api_key_id", keyID))
+	retryDelay := asyncCheckDelay(resp.GetAsyncOperation().GetCheckDuration().AsDuration())
+	if waitErr := awaitAsyncOperation(waitCtx, l, o.client, opID, retryDelay); waitErr != nil {
+		ctxzap.Extract(ctx).Warn(
+			"baton-temporalcloud: API key cleanup did not complete",
+			zap.String("api_key_id", keyID),
+			zap.Error(waitErr),
+		)
+		return fmt.Errorf("%w (cleanup incomplete: API key %s for service account %s may remain at the provider: %v)", cause, keyID, ownerID, waitErr)
+	}
+	return cause
+}
+
+// apiKeyAlreadyIssuedError reports an existing credential for this request
+// identity. It names the key when the connector could find it, and never
+// deletes it: the connector cannot prove the earlier attempt's secret was never
+// delivered, so removing it could revoke a credential a caller already holds.
+func apiKeyAlreadyIssuedError(requestID, ownerID, keyID string) error {
+	detail := "the existing key could not be located in the provider's listing"
+	if keyID != "" {
+		detail = fmt.Sprintf("key %s", keyID)
+	}
+	return status.Errorf(codes.AlreadyExists,
+		"baton-temporalcloud: an API key for request %q already exists for service account %q (%s); Temporal Cloud returns a key's secret only once, so it cannot be re-delivered. Revoke that key and retry the request.",
+		requestID, ownerID, detail)
+}
+
 // issuedCredentialName is the provider-side display name this connector gives
 // a credential it mints. Deriving it from the request id is what makes a
 // retried request find its predecessor's key.
 func issuedCredentialName(requestID string) string {
+	return apiKeyNamePrefix + requestID
+}
+
+// apiKeyOperationID is the provider request identity for a C1 issuance
+// request: the value sent as CreateApiKeyRequest.async_operation_id and later
+// read back with GetAsyncOperation. It is a pure function of the C1 request id,
+// so every attempt at the same request carries the same identity, and a
+// response-lost create can be detected without depending on the key listing.
+func apiKeyOperationID(requestID string) string {
 	return apiKeyNamePrefix + requestID
 }
 
@@ -223,7 +375,11 @@ func issuedCredentialName(requestID string) string {
 // maximum has to hold even for a caller that never declares an expiry.
 func apiKeyExpiry(requested *timestamppb.Timestamp, now time.Time) (time.Time, error) {
 	if requested == nil {
-		return now.Add(apiKeyDefaultTTL), nil
+		// Truncated to a whole second so the instant this connector asks for is
+		// the instant it can compare against what the provider reports back;
+		// a sub-second component would make every default-path readback fail
+		// on rounding alone.
+		return now.Add(apiKeyDefaultTTL).Truncate(time.Second), nil
 	}
 	if err := requested.CheckValid(); err != nil {
 		return time.Time{}, status.Errorf(codes.InvalidArgument, "baton-temporalcloud: requested expiry is invalid: %v", err)
