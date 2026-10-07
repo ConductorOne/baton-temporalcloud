@@ -20,7 +20,6 @@ import (
 
 	cloudservicev1 "go.temporal.io/cloud-sdk/api/cloudservice/v1"
 	identityv1 "go.temporal.io/cloud-sdk/api/identity/v1"
-	operationv1 "go.temporal.io/cloud-sdk/api/operation/v1"
 )
 
 var _ connectorbuilder.ResourceSyncerV2 = (*serviceAccountBuilder)(nil)
@@ -161,25 +160,25 @@ func (o *serviceAccountBuilder) IssueCapabilityDetails(_ context.Context) (*v2.C
 //   - Retry after a clean success: the by-name pre-check finds the key and
 //     refuses with AlreadyExists, naming it. Nothing is deleted. Still one.
 //   - Create committed, response lost: the attempt returns the transport error;
-//     the retry's operation read-back sees a fulfilled operation and refuses,
+//     the retry finds an operation for this request identity and refuses,
 //     naming the key when the listing shows it. One credential exists, but its
 //     secret was never delivered, so it is unusable; the error tells an operator
 //     to revoke it and re-request.
 //   - Create committed, listing lagging: when the operation record is visible
-//     before the key listing catches up, the operation read-back refuses even
-//     though the listing is empty, so no duplicate is minted. This is the case
-//     the second read buys; it is not a claim that the operation record is
-//     always ahead of the listing, and when neither shows the key the mint
-//     proceeds exactly as it would for a first attempt.
+//     and the key listing is not, the operation read-back still refuses, so no
+//     duplicate is minted. This is what the second read buys. It is not a claim
+//     that the operation record is always ahead of the listing.
 //   - Operation record or key listing unreadable: fails closed with the
 //     provider's own code. Nothing is minted. Unchanged.
 //   - Create fails unambiguously: the provider's error is returned, augmented
-//     for the key limit. Nothing was created; a later retry may mint.
-//   - Operation FAILED or CANCELLED: the operation record does not forbid a
-//     mint, so issuance continues -- but a failed operation is NOT proof that
-//     nothing was created, which is why the by-name lookup runs next and
-//     refuses when a key is there. The listing, not the operation state, is the
-//     guard against a duplicate.
+//     for the key limit. Nothing was created. Whether this request id may be
+//     used again depends on whether the provider recorded an operation for the
+//     attempt: if it did, the id is spent and a new request is needed.
+//   - Operation FAILED or CANCELLED: refuses. An earlier attempt existed, and
+//     its state is not proof that the provider created no key -- a create can
+//     commit and then report a failure -- so the key listing is not consulted
+//     for permission either. The request id is spent; a caller must raise a new
+//     request.
 //   - Read-back disagrees with the request, or the response carries no secret:
 //     the key is rolled back and the failure is returned. Zero, or one the error
 //     names as possibly remaining when cleanup itself failed.
@@ -187,7 +186,10 @@ func (o *serviceAccountBuilder) IssueCapabilityDetails(_ context.Context) (*v2.C
 //     and the same display name, so the provider has what it needs to collapse
 //     them; whether it does is its contract, and Temporal Cloud documents none.
 //     The connector deletes neither key. This is the one row that can leave two
-//     provider credentials, and it is recorded rather than papered over.
+//     provider credentials, and it is recorded rather than papered over. A
+//     serial retry after an unknown create can duplicate the same way when
+//     neither read shows the key; C1's single-dispatch and no-redrive rule
+//     contains its own path, not every direct SDK caller.
 func (o *serviceAccountBuilder) Issue(ctx context.Context, input *connectorbuilder.CredentialIssueInput) (*connectorbuilder.CredentialIssueOutput, error) {
 	if input == nil || input.IdentityID == nil || input.IdentityID.GetResourceType() != serviceAccountResourceType.Id {
 		return nil, status.Error(codes.InvalidArgument, "baton-temporalcloud: a Temporal Cloud service account identity is required")
@@ -209,13 +211,15 @@ func (o *serviceAccountBuilder) Issue(ctx context.Context, input *connectorbuild
 	name := issuedCredentialName(input.RequestID)
 	opID := apiKeyOperationID(input.RequestID)
 
-	// The provider's own operation record is the only signal that survives a
-	// lost create response, and unlike the key listing it does not lag.
-	fulfilled, err := o.apiKeyOperationFulfilled(ctx, opID)
+	// A second, independent read alongside the key listing: the provider's own
+	// record that an attempt for this request identity already happened. Only
+	// NotFound permits minting; see the function for why every other state
+	// refuses.
+	attempted, err := o.apiKeyRequestAlreadyAttempted(ctx, opID)
 	if err != nil {
 		return nil, err
 	}
-	if fulfilled {
+	if attempted {
 		existing, lookupErr := o.findAPIKeyByName(ctx, ownerID, name)
 		if lookupErr != nil {
 			return nil, lookupErr
@@ -284,32 +288,37 @@ func (o *serviceAccountBuilder) Issue(ctx context.Context, input *connectorbuild
 	}, nil
 }
 
-// apiKeyOperationFulfilled reports whether the provider already holds a
-// completed operation for this request identity. NotFound is the expected
-// answer for a first attempt. A pending or in-progress operation counts as
-// "already issued": another attempt for the same request is in flight, and
-// minting a second key would be exactly the duplicate this check exists to
-// prevent.
-func (o *serviceAccountBuilder) apiKeyOperationFulfilled(ctx context.Context, opID string) (bool, error) {
-	resp, err := o.client.GetAsyncOperation(ctx, &cloudservicev1.GetAsyncOperationRequest{AsyncOperationId: opID})
-	if err != nil {
+// apiKeyRequestAlreadyAttempted reports whether the provider already holds an
+// operation for this request identity.
+//
+// NotFound is the expected answer for a first attempt, and it is the ONLY
+// answer that permits minting. Every other outcome refuses:
+//
+//   - FULFILLED: an earlier attempt's create committed.
+//   - PENDING or IN_PROGRESS: another attempt for this request is in flight.
+//   - FAILED or CANCELLED: an earlier attempt existed, and its state does NOT
+//     prove the provider created no key -- a create can commit and then report
+//     a failure. An empty key listing does not supply that missing proof
+//     either, because the listing can lag.
+//   - UNSPECIFIED, or a state this connector does not recognise: no verdict.
+//   - A response with no operation at all: also no verdict.
+//
+// Refusing on a failed attempt costs a stranded request id: a request whose
+// first attempt genuinely failed cannot be re-driven under the same id, so a
+// caller must raise a new request. That is the conservative direction, and it
+// is a deliberate trade -- a duplicate credential is silent, whereas a stuck
+// request is visible and its error names the key and the recovery.
+func (o *serviceAccountBuilder) apiKeyRequestAlreadyAttempted(ctx context.Context, opID string) (bool, error) {
+	if _, err := o.client.GetAsyncOperation(ctx, &cloudservicev1.GetAsyncOperationRequest{AsyncOperationId: opID}); err != nil {
 		if status.Code(err) == codes.NotFound {
 			return false, nil
 		}
 		return false, fmt.Errorf("baton-temporalcloud: failed to read async operation %q: %w", opID, err)
 	}
-	switch resp.GetAsyncOperation().GetState() {
-	case operationv1.AsyncOperation_STATE_FAILED, operationv1.AsyncOperation_STATE_CANCELLED:
-		// A failed or cancelled operation is NOT proof that nothing was
-		// created: a create can commit and then report a failure. This is why
-		// the caller runs the by-name lookup next and refuses when a key is
-		// there -- the listing, not the operation state, is the guard against a
-		// duplicate. Proceeding here only says "the operation record does not
-		// itself forbid a mint".
-		return false, nil
-	default:
-		return true, nil
-	}
+	// The provider answered, so an operation for this request identity exists.
+	// Its state is not consulted: none of the states is proof that no key was
+	// created.
+	return true, nil
 }
 
 // verifyIssuedAPIKey confirms from the provider's own record that the key it
@@ -343,6 +352,13 @@ func (o *serviceAccountBuilder) verifyIssuedAPIKey(ctx context.Context, keyID, o
 	providerExpiry := spec.GetExpiryTime()
 	if providerExpiry == nil {
 		return time.Time{}, status.Errorf(codes.Internal, "baton-temporalcloud: provider recorded API key %q with no expiry", keyID)
+	}
+	// AsTime normalizes malformed nanos instead of reporting them, so an
+	// invalid timestamp has to be rejected before it is treated as the
+	// provider's authoritative instant.
+	if err := providerExpiry.CheckValid(); err != nil {
+		return time.Time{}, status.Errorf(codes.Internal,
+			"baton-temporalcloud: provider recorded API key %q with an invalid expiry timestamp: %v", keyID, err)
 	}
 	actual := providerExpiry.AsTime()
 	if actual.After(approvedExpiry) {

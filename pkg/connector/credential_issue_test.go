@@ -370,20 +370,40 @@ func TestIssueAPIKeyRefusesWhenOperationInFlight(t *testing.T) {
 	require.Empty(t, fake.created)
 }
 
-// TestIssueAPIKeyAllowsRetryAfterFailedOperation proves a request whose earlier
-// attempt genuinely failed can still mint: a failed operation created nothing,
-// so refusing would strand the request forever.
-func TestIssueAPIKeyAllowsRetryAfterFailedOperation(t *testing.T) {
+// TestIssueAPIKeyRefusesAfterAFailedOrCancelledOperation proves a failed or
+// cancelled attempt does not license a re-mint.
+//
+// The operation record proves an earlier attempt existed; its state does not
+// prove the provider created no key, because a create can commit and then
+// report a failure. The key listing is empty here, and deliberately not
+// consulted for permission: a listing that can lag supplies no proof either. So
+// the request is refused with neither a create nor a delete -- nothing is
+// minted, and nothing is revoked.
+func TestIssueAPIKeyRefusesAfterAFailedOrCancelledOperation(t *testing.T) {
 	t.Parallel()
 
-	fake := newIssuanceFake(t, "sa-1", time.Now().Add(time.Hour))
-	fake.opFound = true
-	fake.opState = operationv1.AsyncOperation_STATE_FAILED
+	for _, state := range []struct {
+		name  string
+		state operationv1.AsyncOperation_State
+	}{
+		{name: "failed", state: operationv1.AsyncOperation_STATE_FAILED},
+		{name: "cancelled", state: operationv1.AsyncOperation_STATE_CANCELLED},
+		{name: "unspecified", state: operationv1.AsyncOperation_STATE_UNSPECIFIED},
+	} {
+		t.Run(state.name, func(t *testing.T) {
+			t.Parallel()
 
-	out, err := fake.issue(context.Background(), "req-retry")
-	require.NoError(t, err)
-	require.NotNil(t, out)
-	require.Len(t, fake.created, 1)
+			fake := newIssuanceFake(t, "sa-1", time.Now().Add(time.Hour))
+			fake.opFound = true
+			fake.opState = state.state
+			fake.existing = nil // the listing is empty
+
+			_, err := fake.issue(context.Background(), "req-"+state.name)
+			require.Equal(t, codes.AlreadyExists, status.Code(err))
+			require.Empty(t, fake.created, "a recorded operation must not be followed by a create")
+			require.Empty(t, fake.deleted, "refusing must not revoke anything")
+		})
+	}
 }
 
 // TestIssueAPIKeyFailsClosedOnAmbiguousProviderAnswers characterizes the
@@ -525,6 +545,16 @@ func TestIssueAPIKeyRejectsUnverifiedProviderRecord(t *testing.T) {
 			name: "no expiry recorded",
 			record: &identityv1.ApiKey{Id: "key-1", Spec: &identityv1.ApiKeySpec{
 				OwnerId: "sa-1", OwnerType: identityv1.OwnerType_OWNER_TYPE_SERVICE_ACCOUNT,
+			}},
+		},
+		{
+			// AsTime normalizes malformed nanos rather than reporting them, so
+			// an invalid timestamp must be rejected before it is treated as the
+			// provider's authoritative instant.
+			name: "invalid expiry timestamp",
+			record: &identityv1.ApiKey{Id: "key-1", Spec: &identityv1.ApiKeySpec{
+				OwnerId: "sa-1", OwnerType: identityv1.OwnerType_OWNER_TYPE_SERVICE_ACCOUNT,
+				ExpiryTime: &timestamppb.Timestamp{Seconds: 253402300800},
 			}},
 		},
 	} {

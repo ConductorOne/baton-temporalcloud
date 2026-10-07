@@ -276,6 +276,9 @@ key is.
   unreadable key listing, or a create whose outcome is unknown — the connector
   fails closed rather than minting. It never deletes a key it cannot prove was
   never delivered, because deleting a delivered credential would be a silent
-  revocation; a key left behind is named in the error instead. A create that
-  reports failure is likewise not proof that nothing was created, which is why
-  the key listing is consulted before any mint.
+  revocation; a key left behind is named in the error instead.
+- An attempt that reports failure does not license a second one. If the provider
+  recorded an operation for the request, the connector refuses even when the key
+  listing is empty: the failure does not prove no key was created — a create can
+  commit and then report a failure — and an empty listing does not supply that
+  proof either. The request id is spent; raise a new request.
