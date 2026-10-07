@@ -73,6 +73,11 @@ func encryptionKey(t *testing.T) (*v2.EncryptionConfig, *jose.JSONWebKey) {
 	return config, privateKey
 }
 
+// unadvertisedResourceTypeID is a secret resource type this connector never
+// declares, used to prove the SDK refuses an unadvertised pair. It is a
+// resource-type id, not a credential.
+const unadvertisedResourceTypeID = "not-an-advertised-type"
+
 func issueRequest(identity *v2.ResourceId, options *v2.CredentialIssueOptions, requestID string, configs []*v2.EncryptionConfig) *v2.IssueCredentialRequest {
 	return v2.IssueCredentialRequest_builder{
 		IdentityId:        identity,
@@ -95,7 +100,7 @@ func TestIssuanceRefusesUnadvertisedPairBeforeMinting(t *testing.T) {
 	_, err := server.IssueCredential(context.Background(), issueRequest(
 		&v2.ResourceId{ResourceType: serviceAccountResourceType.Id, Resource: "sa-1"},
 		v2.CredentialIssueOptions_builder{
-			SecretResourceTypeId: "some-other-secret-type",
+			SecretResourceTypeId: unadvertisedResourceTypeID,
 			ApiKey:               v2.CredentialIssueOptions_ApiKey_builder{}.Build(),
 		}.Build(),
 		"req-unadvertised",

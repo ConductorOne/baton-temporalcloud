@@ -348,11 +348,35 @@ func TestIssueAPIKeyRefusesWhenOperationAlreadyFulfilled(t *testing.T) {
 
 	_, err := fake.issue(context.Background(), "req-lost")
 	require.Equal(t, codes.AlreadyExists, status.Code(err))
-	require.ErrorContains(t, err, "could not be located",
+	require.ErrorContains(t, err, "no key for it was found",
 		"the error must say the handle was unavailable rather than invent one")
+	require.ErrorContains(t, err, "raise a new request",
+		"the request id is spent, so the recovery is a new request")
+	require.NotContains(t, err.Error(), "revoke",
+		"with no key located there is nothing to revoke, and saying otherwise sends an operator hunting")
 	require.Empty(t, fake.created, "a fulfilled operation must not be followed by a second create")
 	require.Empty(t, fake.deleted,
 		"the existing key must not be deleted: the connector cannot prove its secret was never delivered")
+}
+
+// TestIssueAPIKeyDuplicateErrorNamesTheKeyAndTheRecovery is the other half of
+// the guidance: when a key IS located, the operator is told to deal with that
+// key first, and that the request id is spent either way.
+func TestIssueAPIKeyDuplicateErrorNamesTheKeyAndTheRecovery(t *testing.T) {
+	t.Parallel()
+
+	fake := newIssuanceFake(t, "sa-1", time.Now().Add(time.Hour))
+	fake.existing = []*identityv1.ApiKey{
+		{Id: "key-existing", Spec: &identityv1.ApiKeySpec{OwnerId: "sa-1", DisplayName: "c1-req-named"}},
+	}
+
+	_, err := fake.issue(context.Background(), "req-named")
+	require.Equal(t, codes.AlreadyExists, status.Code(err))
+	require.ErrorContains(t, err, "key-existing", "the operator needs the key's id to act on it")
+	require.ErrorContains(t, err, "request id is spent")
+	require.ErrorContains(t, err, "raise a new request")
+	require.Empty(t, fake.created)
+	require.Empty(t, fake.deleted)
 }
 
 // TestIssueAPIKeyRefusesWhenOperationInFlight covers the concurrent case from
@@ -450,6 +474,66 @@ func TestIssueAPIKeyFailsClosedOnAmbiguousProviderAnswers(t *testing.T) {
 		require.Empty(t, fake.deleted,
 			"a create of unknown outcome must not trigger a blind delete: no key id is known, and the key may not exist")
 	})
+}
+
+// TestIssueAPIKeyRetriesTheReadbackOfAnUnawaitedCreate covers the race between
+// the create and the read-back that follows it.
+//
+// The create is deliberately not awaited, so the read can see NotFound for a key
+// the provider has already returned an id for. Treating that as a failure would
+// roll the key back -- destroying a valid credential, spending the request id,
+// and, if the rollback's delete also raced the write, leaving the key to appear
+// later as an untracked credential.
+func TestIssueAPIKeyRetriesTheReadbackOfAnUnawaitedCreate(t *testing.T) {
+	t.Parallel()
+
+	expiresAt := time.Now().Add(4 * time.Hour).Truncate(time.Second)
+	fake := newIssuanceFake(t, "sa-1", expiresAt)
+	inner := fake.getApiKey
+	notFounds := 0
+	fake.getApiKey = func(c context.Context, in *cloudservicev1.GetApiKeyRequest) (*cloudservicev1.GetApiKeyResponse, error) {
+		if notFounds < 2 {
+			notFounds++
+			return nil, status.Error(codes.NotFound, "key not visible yet")
+		}
+		return inner(c, in)
+	}
+
+	out, err := newServiceAccountBuilder(fake.fakeCloudService).Issue(context.Background(), &connectorbuilder.CredentialIssueInput{
+		IdentityID:        &v2.ResourceId{ResourceType: serviceAccountResourceType.Id, Resource: "sa-1"},
+		CredentialOptions: apiKeyIssueOptions(),
+		ExpiresAt:         timestamppb.New(expiresAt),
+		RequestID:         "req-readback-race",
+	})
+	require.NoError(t, err, "a read-back briefly behind the write must not fail the issuance")
+	require.NotNil(t, out)
+	require.Equal(t, 2, notFounds, "the retry must actually have been exercised")
+	require.Empty(t, fake.deleted, "no key may be rolled back for a read that merely raced the write")
+}
+
+// TestIssueAPIKeyDoesNotRetryOtherReadbackErrors keeps the retry narrow: only
+// NotFound is a race. A permission or transport failure is the provider's
+// answer and must fail immediately rather than be retried into a slow timeout.
+func TestIssueAPIKeyDoesNotRetryOtherReadbackErrors(t *testing.T) {
+	t.Parallel()
+
+	expiresAt := time.Now().Add(4 * time.Hour).Truncate(time.Second)
+	fake := newIssuanceFake(t, "sa-1", expiresAt)
+	calls := 0
+	fake.getApiKey = func(context.Context, *cloudservicev1.GetApiKeyRequest) (*cloudservicev1.GetApiKeyResponse, error) {
+		calls++
+		return nil, status.Error(codes.PermissionDenied, "not authorized to read the key")
+	}
+
+	_, err := newServiceAccountBuilder(fake.fakeCloudService).Issue(context.Background(), &connectorbuilder.CredentialIssueInput{
+		IdentityID:        &v2.ResourceId{ResourceType: serviceAccountResourceType.Id, Resource: "sa-1"},
+		CredentialOptions: apiKeyIssueOptions(),
+		ExpiresAt:         timestamppb.New(expiresAt),
+		RequestID:         "req-readback-denied",
+	})
+	require.Error(t, err)
+	require.Equal(t, 1, calls, "a non-NotFound read error must not be retried")
+	require.Len(t, fake.deleted, 1, "an unverifiable key is still rolled back")
 }
 
 // TestIssueAPIKeyConcurrentAttemptsShareOneRequestIdentity pins the one thing
@@ -551,10 +635,16 @@ func TestIssueAPIKeyRejectsUnverifiedProviderRecord(t *testing.T) {
 			// AsTime normalizes malformed nanos rather than reporting them, so
 			// an invalid timestamp must be rejected before it is treated as the
 			// provider's authoritative instant.
+			//
+			// Nanos == 1e9 is invalid, and time.Unix normalizes it to exactly
+			// the approved instant -- so this case is INSIDE the expiry
+			// tolerance and only CheckValid can reject it. A timestamp far in
+			// the future would be rejected by the comparison anyway and would
+			// not cover the guard at all.
 			name: "invalid expiry timestamp",
 			record: &identityv1.ApiKey{Id: "key-1", Spec: &identityv1.ApiKeySpec{
 				OwnerId: "sa-1", OwnerType: identityv1.OwnerType_OWNER_TYPE_SERVICE_ACCOUNT,
-				ExpiryTime: &timestamppb.Timestamp{Seconds: 253402300800},
+				ExpiryTime: &timestamppb.Timestamp{Seconds: expiresAt.Unix() - 1, Nanos: 1_000_000_000},
 			}},
 		},
 	} {
@@ -616,8 +706,8 @@ func TestIssueAPIKeyRollbackSurvivesCanceledContext(t *testing.T) {
 			OwnerId:   "someone-else",
 			OwnerType: identityv1.OwnerType_OWNER_TYPE_SERVICE_ACCOUNT,
 		}}
-		inner := fake.fakeCloudService.getApiKey
-		fake.fakeCloudService.getApiKey = func(c context.Context, in *cloudservicev1.GetApiKeyRequest) (*cloudservicev1.GetApiKeyResponse, error) {
+		inner := fake.getApiKey
+		fake.getApiKey = func(c context.Context, in *cloudservicev1.GetApiKeyRequest) (*cloudservicev1.GetApiKeyResponse, error) {
 			resp, err := inner(c, in)
 			cancel() // the request expires here
 			return resp, err
@@ -763,6 +853,42 @@ func TestDeleteAPIKeyTreatsAlreadyGoneAsSuccess(t *testing.T) {
 
 	_, err := newAPIKeyBuilder(fake).Delete(context.Background(), &v2.ResourceId{ResourceType: apiKeyResourceType.Id, Resource: "key-gone"}, nil)
 	require.NoError(t, err)
+}
+
+// TestDeleteAPIKeySkipsAKeyTheProviderAlreadyRetired keeps a revoke of an
+// already-gone key idempotent without asking the provider to delete something it
+// has already deleted: a provider that refuses that would turn a no-op revoke
+// into a failure, contradicting the documented idempotency.
+func TestDeleteAPIKeySkipsAKeyTheProviderAlreadyRetired(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		state resourcev1.ResourceState
+	}{
+		{name: "deleted", state: resourcev1.ResourceState_RESOURCE_STATE_DELETED},
+		{name: "deleting", state: resourcev1.ResourceState_RESOURCE_STATE_DELETING},
+		{name: "expired", state: resourcev1.ResourceState_RESOURCE_STATE_EXPIRED},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			fake := &fakeCloudService{
+				getApiKey: func(context.Context, *cloudservicev1.GetApiKeyRequest) (*cloudservicev1.GetApiKeyResponse, error) {
+					return &cloudservicev1.GetApiKeyResponse{ApiKey: &identityv1.ApiKey{
+						Id: "key-1", State: tc.state, ResourceVersion: "v1",
+					}}, nil
+				},
+				deleteApiKey: func(context.Context, *cloudservicev1.DeleteApiKeyRequest) (*cloudservicev1.DeleteApiKeyResponse, error) {
+					t.Fatal("no delete may be issued for a key the provider has already retired")
+					return nil, nil
+				},
+			}
+
+			_, err := newAPIKeyBuilder(fake).Delete(context.Background(), &v2.ResourceId{ResourceType: apiKeyResourceType.Id, Resource: "key-1"}, nil)
+			require.NoError(t, err)
+		})
+	}
 }
 
 // TestDeleteAPIKeyPropagatesProviderFailure keeps a real provider failure

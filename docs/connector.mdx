@@ -227,6 +227,13 @@ key is.
   service-account API keys: a **Global Administrator** or **Account Owner**.
   Namespace Admins can manage keys for the Namespace-scoped service accounts
   they administer, but not account-wide ones.
+- **Sync of the API keys resource type needs account-wide read as well.** The
+  connector lists every API key in the account to build that inventory, and
+  Temporal Cloud lets only Global Administrators and Account Owners monitor
+  another identity's keys. A lesser principal may be refused, or may see only
+  its own keys — which C1 would read as every other key having been deleted. Use
+  a Global Administrator or Account Owner credential for a tenant that selects
+  the API keys resource type.
 - The service account that receives the credential must already exist and be
   synced into C1. C1 never creates a service account to satisfy a request.
 - The **API keys** resource type must be selected in the connector's sync
@@ -265,7 +272,9 @@ key is.
   the key listing first, and consults the provider's own operation record as a
   second, independent read. Temporal Cloud returns a key's secret only once, so
   an existing key cannot be handed back: the connector reports the existing
-  key's id instead, and an operator must revoke it before re-requesting.
+  key's id instead, and the request id is then spent — revoke that key if it is
+  not in use, and **raise a new request**. When no key is found, there is
+  nothing to revoke and a new request is still required.
 - Two attempts that reach the provider concurrently are the one case this does
   not cover. Each carries the same request identity, so a provider that
   deduplicates on it will collapse them — but Temporal Cloud does not document

@@ -75,6 +75,14 @@ const (
 	// matters. This constant never licenses a later expiry.
 	apiKeyExpiryReadbackTolerance = time.Minute
 
+	// apiKeyReadbackAttempts and apiKeyReadbackInterval bound how long the
+	// post-create read-back retries a NotFound. The create is deliberately not
+	// awaited, so the read can race the provider's own write; treating that race
+	// as a failure would roll back a key the provider just said it created,
+	// destroy a valid credential and spend the request id.
+	apiKeyReadbackAttempts = 4
+	apiKeyReadbackInterval = 500 * time.Millisecond
+
 	// apiKeyDeletionMaxDuration bounds the wait for the provider's
 	// asynchronous delete of a vended key.
 	apiKeyDeletionMaxDuration = 10 * time.Minute
@@ -193,6 +201,13 @@ func (o *apiKeyBuilder) Delete(ctx context.Context, resourceID *v2.ResourceId, _
 		}
 		return nil, fmt.Errorf("baton-temporalcloud: failed to read API key %q before delete: %w", keyID, err)
 	}
+	if apiKeyIsAlreadyGone(existing.GetApiKey().GetState()) {
+		// The provider already retired this key. Issuing the delete anyway asks
+		// it to delete something it has already deleted, and a provider that
+		// refuses that turns a revoke of an already-gone key into a failure --
+		// the opposite of the idempotency this path documents.
+		return nil, nil
+	}
 
 	resp, err := o.client.DeleteApiKey(ctx, &cloudservicev1.DeleteApiKeyRequest{
 		KeyId:           keyID,
@@ -287,6 +302,22 @@ func apiKeyOwnerResourceID(spec *identityv1.ApiKeySpec) *v2.ResourceId {
 func apiKeyIsTerminal(state resourcev1.ResourceState) bool {
 	switch state {
 	case resourcev1.ResourceState_RESOURCE_STATE_DELETED,
+		resourcev1.ResourceState_RESOURCE_STATE_EXPIRED:
+		return true
+	default:
+		return false
+	}
+}
+
+// apiKeyIsAlreadyGone reports whether a key the provider still lists is
+// nonetheless retired for every purpose a revoke cares about: deleted, expiring
+// or expired, or already on its way out. Distinct from apiKeyIsTerminal, which
+// decides what a sync shows; this one decides whether asking the provider to
+// delete the key again is meaningful.
+func apiKeyIsAlreadyGone(state resourcev1.ResourceState) bool {
+	switch state {
+	case resourcev1.ResourceState_RESOURCE_STATE_DELETED,
+		resourcev1.ResourceState_RESOURCE_STATE_DELETING,
 		resourcev1.ResourceState_RESOURCE_STATE_EXPIRED:
 		return true
 	default:
