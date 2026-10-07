@@ -258,7 +258,14 @@ key is.
   key is created; revoke an existing key and retry.
 - A retried request never creates a second key. Each request carries a
   deterministic identity derived from its C1 request id, and the connector
-  refuses to mint when a credential for that identity already exists. Temporal
-  Cloud returns a key's secret only once, so an existing key cannot be handed
-  back: the connector reports the existing key's id instead, and an operator
-  must revoke it before retrying.
+  refuses to mint when a credential for that identity already exists — checking
+  the provider's own operation record as well as the key listing, so a create
+  whose response was lost is still detected when the listing has not caught up.
+  Temporal Cloud returns a key's secret only once, so an existing key cannot be
+  handed back: the connector reports the existing key's id instead, and an
+  operator must revoke it before re-requesting.
+- When the provider gives no verdict — an unreadable operation record, an
+  unreadable key listing, or a create whose outcome is unknown — the connector
+  fails closed rather than minting. It never deletes a key it cannot prove was
+  never delivered, because deleting a delivered credential would be a silent
+  revocation; a key left behind is named in the error instead.

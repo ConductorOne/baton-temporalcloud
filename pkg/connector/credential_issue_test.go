@@ -346,6 +346,8 @@ func TestIssueAPIKeyRefusesWhenOperationAlreadyFulfilled(t *testing.T) {
 	require.ErrorContains(t, err, "could not be located",
 		"the error must say the handle was unavailable rather than invent one")
 	require.Empty(t, fake.created, "a fulfilled operation must not be followed by a second create")
+	require.Empty(t, fake.deleted,
+		"the existing key must not be deleted: the connector cannot prove its secret was never delivered")
 }
 
 // TestIssueAPIKeyRefusesWhenOperationInFlight covers the concurrent case from
@@ -377,6 +379,52 @@ func TestIssueAPIKeyAllowsRetryAfterFailedOperation(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, out)
 	require.Len(t, fake.created, 1)
+}
+
+// TestIssueAPIKeyFailsClosedOnAmbiguousProviderAnswers characterizes the
+// conservative outcome for every interleaving where the provider gives no
+// verdict. In each case nothing is minted, and the caller is told why: an
+// unreadable record is never treated as an absent one, and a create whose
+// outcome is unknown never triggers a blind delete.
+func TestIssueAPIKeyFailsClosedOnAmbiguousProviderAnswers(t *testing.T) {
+	t.Parallel()
+
+	t.Run("operation record unreadable", func(t *testing.T) {
+		t.Parallel()
+
+		fake := newIssuanceFake(t, "sa-1", time.Now().Add(time.Hour))
+		fake.getAsyncOp = func(context.Context, *cloudservicev1.GetAsyncOperationRequest) (*cloudservicev1.GetAsyncOperationResponse, error) {
+			return nil, status.Error(codes.Unavailable, "provider unreachable")
+		}
+		_, err := fake.issue(context.Background(), "req-op-unknown")
+		require.Equal(t, codes.Unavailable, status.Code(err))
+		require.Empty(t, fake.created, "an unreadable operation record must not be read as absent")
+	})
+
+	t.Run("key listing unreadable", func(t *testing.T) {
+		t.Parallel()
+
+		fake := newIssuanceFake(t, "sa-1", time.Now().Add(time.Hour))
+		fake.getApiKeys = func(context.Context, *cloudservicev1.GetApiKeysRequest) (*cloudservicev1.GetApiKeysResponse, error) {
+			return nil, status.Error(codes.Unavailable, "provider unreachable")
+		}
+		_, err := fake.issue(context.Background(), "req-list-unknown")
+		require.Equal(t, codes.Unavailable, status.Code(err))
+		require.Empty(t, fake.created, "an unreadable listing must not be read as empty")
+	})
+
+	t.Run("create outcome unknown", func(t *testing.T) {
+		t.Parallel()
+
+		fake := newIssuanceFake(t, "sa-1", time.Now().Add(time.Hour))
+		fake.createErr = status.Error(codes.DeadlineExceeded, "create timed out")
+		_, err := fake.issue(context.Background(), "req-ambiguous-create")
+		require.Equal(t, codes.DeadlineExceeded, status.Code(err))
+		require.ErrorContains(t, err, "failed to create service account API key",
+			"the failure must name the operation that is now uncertain")
+		require.Empty(t, fake.deleted,
+			"a create of unknown outcome must not trigger a blind delete: no key id is known, and the key may not exist")
+	})
 }
 
 // TestIssueAPIKeyConcurrentAttemptsShareOneRequestIdentity pins the one thing

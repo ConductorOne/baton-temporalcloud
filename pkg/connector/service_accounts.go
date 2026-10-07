@@ -145,6 +145,39 @@ func (o *serviceAccountBuilder) IssueCapabilityDetails(_ context.Context) (*v2.C
 // The response already carries the key id and secret, and a create whose wait
 // timed out would leave a key this call can never return. Returning the
 // provider's own answer keeps "created" and "returned" the same event.
+//
+// # Interleavings, and the conservative outcome for each
+//
+// The rule behind every row: fail closed whenever the provider gives no verdict,
+// and never delete a credential this connector cannot prove was undelivered. A
+// stranded key is visible and revocable; a duplicate credential is silent, and
+// deleting a delivered one is a silent revocation.
+//
+//   - Clean attempt: creates, verifies the provider's record, returns. Exactly
+//     one provider credential.
+//   - Retry after a clean success: the by-name pre-check finds the key and
+//     refuses with AlreadyExists, naming it. Nothing is deleted. Still one.
+//   - Create committed, response lost: the attempt returns the transport error;
+//     the retry's operation read-back sees a fulfilled operation and refuses,
+//     naming the key when the listing shows it. One credential exists, but its
+//     secret was never delivered, so it is unusable; the error tells an operator
+//     to revoke it and re-request.
+//   - Create committed, listing lagging: the operation read-back refuses even
+//     though the listing is empty, so no duplicate is minted. One.
+//   - Operation record or key listing unreadable: fails closed with the
+//     provider's own code. Nothing is minted. Unchanged.
+//   - Create fails unambiguously: the provider's error is returned, augmented
+//     for the key limit. Nothing was created; a later retry may mint.
+//   - Operation FAILED or CANCELLED: mints, because a failed operation created
+//     nothing. Exactly one.
+//   - Read-back disagrees with the request, or the response carries no secret:
+//     the key is rolled back and the failure is returned. Zero, or one the error
+//     names as possibly remaining when cleanup itself failed.
+//   - Two attempts race past the pre-checks: both send the same request identity
+//     and the same display name, so the provider has what it needs to collapse
+//     them; whether it does is its contract, and Temporal Cloud documents none.
+//     The connector deletes neither key. This is the one row that can leave two
+//     provider credentials, and it is recorded rather than papered over.
 func (o *serviceAccountBuilder) Issue(ctx context.Context, input *connectorbuilder.CredentialIssueInput) (*connectorbuilder.CredentialIssueOutput, error) {
 	if input == nil || input.IdentityID == nil || input.IdentityID.GetResourceType() != serviceAccountResourceType.Id {
 		return nil, status.Error(codes.InvalidArgument, "baton-temporalcloud: a Temporal Cloud service account identity is required")
