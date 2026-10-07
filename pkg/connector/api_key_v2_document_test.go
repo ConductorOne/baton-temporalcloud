@@ -29,43 +29,43 @@ func TestAPIKeyV2ValueIsTheCanonicalDocument(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
-		name  string
-		token string
-		keyID string
-		want  string
+		name     string
+		keyValue string
+		keyID    string
+		want     string
 	}{
 		{
-			name:  "both fields, declaration order",
-			token: "abc-123",
-			keyID: "key-1",
-			want:  `{"key_value":"abc-123","key_id":"key-1"}`,
+			name:     "both fields, declaration order",
+			keyValue: "abc-123",
+			keyID:    "key-1",
+			want:     `{"key_value":"abc-123","key_id":"key-1"}`,
 		},
 		{
-			name:  "key_id omitted when the provider reported none",
-			token: "abc-123",
-			want:  `{"key_value":"abc-123"}`,
+			name:     "key_id omitted when the provider reported none",
+			keyValue: "abc-123",
+			want:     `{"key_value":"abc-123"}`,
 		},
 		{
-			name:  "characters encoding/json escapes by default are left alone",
-			token: "a<b>c&d",
-			keyID: "k",
-			want:  `{"key_value":"a<b>c&d","key_id":"k"}`,
+			name:     "characters encoding/json escapes by default are left alone",
+			keyValue: "a<b>c&d",
+			keyID:    "k",
+			want:     `{"key_value":"a<b>c&d","key_id":"k"}`,
 		},
 		{
-			name:  "the JSON minimum is still escaped",
-			token: "a\"b\\c\nd",
-			want:  `{"key_value":"a\"b\\c\nd"}`,
+			name:     "the JSON minimum is still escaped",
+			keyValue: "a\"b\\c\nd",
+			want:     `{"key_value":"a\"b\\c\nd"}`,
 		},
 		{
-			name:  "an opaque JSON token stays a string, never a nested object",
-			token: `{"key":"abc"}`,
-			want:  `{"key_value":"{\"key\":\"abc\"}"}`,
+			name:     "an opaque JSON token stays a string, never a nested object",
+			keyValue: `{"key":"abc"}`,
+			want:     `{"key_value":"{\"key\":\"abc\"}"}`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := apiKeyV2Value(tc.token, tc.keyID)
+			got, err := apiKeyV2Value(tc.keyValue, tc.keyID)
 			require.NoError(t, err)
 			require.Equal(t, tc.want, string(got))
 			require.False(t, strings.HasSuffix(string(got), "\n"),

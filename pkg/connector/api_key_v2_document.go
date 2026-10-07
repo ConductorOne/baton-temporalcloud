@@ -14,7 +14,7 @@ import (
 // C1 does not read this constant. It names the document the producer emits so
 // the connector and the vault agree on one profile without either inventing a
 // second name for it.
-const apiKeyV2ContentType = "api_key_v2"
+const apiKeyV2ContentType = "api_key_v2" //nolint:gosec // Not a credential: a content-type identifier, the same class of false positive C1's own builtin-connector constants carry.
 
 // apiKeyV2Document is the canonical `api_key_v2` value: a flat JSON object
 // keyed by the pinned schema's field names, written in declaration order, with
