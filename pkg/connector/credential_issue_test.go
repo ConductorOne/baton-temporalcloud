@@ -253,8 +253,12 @@ func TestIssueAPIKeyForServiceAccount(t *testing.T) {
 	require.Equal(t, "key-1", out.Secret.GetId().GetResource())
 	require.Equal(t, v2.CredentialResourceMode_CREDENTIAL_RESOURCE_MODE_DISCOVERABLE, out.ResourceMode)
 	require.Len(t, out.PlaintextData, 1)
-	require.Equal(t, "api_key", out.PlaintextData[0].GetName())
-	require.Equal(t, "vended-secret", string(out.PlaintextData[0].GetBytes()))
+	require.Equal(t, apiKeyV2ContentType, out.PlaintextData[0].GetName())
+	// The literal is the assertion: the document is the pinned schema's flat
+	// JSON object, in declaration order, with the empty optionals omitted. A
+	// change to the encoder must fail here rather than quietly re-shape what a
+	// client decodes.
+	require.Equal(t, `{"key_value":"vended-secret","key_id":"key-1"}`, string(out.PlaintextData[0].GetBytes()))
 
 	identity := &v2.ResourceId{ResourceType: serviceAccountResourceType.Id, Resource: "sa-1"}
 	trait := secretTrait(t, out.Secret)

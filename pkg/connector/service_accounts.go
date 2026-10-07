@@ -84,12 +84,21 @@ func newServiceAccountBuilder(client cloudservicev1.CloudServiceClient) *service
 	return &serviceAccountBuilder{client: client}
 }
 
-// IssueCapabilityDetails advertises the credential kinds this connector mints.
+// IssueCapabilityDetails advertises the credential kind this connector mints:
+// an API key owned by the service account the request names.
 //
-// There is exactly one: an API key owned by the service account the request
-// names. It is DISCOVERABLE because Temporal Cloud can enumerate API keys, and
-// the api-key resource type above is declared and synced so an issued key
-// appears in subsequent syncs instead of only in the issuance response.
+// The plaintext value it produces is the canonical `api_key_v2` document, the
+// content type the shipped Multipass catalog declares for an API key or token.
+// It is produced under this one selector rather than under a second one because
+// there is no earlier contract to preserve: no released version of this
+// connector has ever carried a credential-issue capability at all -- every tag
+// through v0.1.3 lacks it -- so the first shape that ships can simply be the
+// correct one. A second option arm or a second secret resource type would exist
+// only to fence a cohort that does not exist.
+//
+// It is DISCOVERABLE because Temporal Cloud can enumerate API keys, and the
+// api-key resource type above is declared and synced so an issued key appears
+// in subsequent syncs instead of only in the issuance response.
 //
 // The advertised expiry window is the provider's, not a product default: the
 // connector accepts any caller-selected expiry from one minute up to Temporal
@@ -110,6 +119,22 @@ func (o *serviceAccountBuilder) IssueCapabilityDetails(_ context.Context) (*v2.C
 		},
 		PreferredOption: v2.CapabilityDetailCredentialOption_CAPABILITY_DETAIL_CREDENTIAL_OPTION_API_KEY,
 	}.Build(), nil, nil
+}
+
+// apiKeyVendedValue renders one issued key as the canonical `api_key_v2`
+// plaintext document, and names it.
+//
+// The name is a label, not a declaration. The SDK carries it beside the
+// encrypted bytes, and nothing may infer a content type from it: the type is
+// bound on C1's side before the provider is called, and a response field cannot
+// forge a pre-dispatch binding. The name matches the content type only so an
+// operator reading a run sees the same word in both places.
+func apiKeyVendedValue(token, keyID string) ([]byte, string, error) {
+	value, err := apiKeyV2Value(token, keyID)
+	if err != nil {
+		return nil, "", fmt.Errorf("baton-temporalcloud: encode %s document: %w", apiKeyV2ContentType, err)
+	}
+	return value, apiKeyV2ContentType, nil
 }
 
 // Issue mints one Temporal Cloud API key owned by the requested service
@@ -279,10 +304,18 @@ func (o *serviceAccountBuilder) Issue(ctx context.Context, input *connectorbuild
 			fmt.Errorf("baton-temporalcloud: build API key secret resource: %w", err))
 	}
 
+	value, plaintextName, err := apiKeyVendedValue(resp.GetToken(), keyID)
+	if err != nil {
+		// The credential is minted but cannot be rendered in the shape its
+		// selector promised, so it can never be delivered. Roll it back rather
+		// than hand C1 bytes that do not match what the caller named.
+		return nil, o.rollbackCreatedAPIKey(ctx, keyID, ownerID, err)
+	}
+
 	return &connectorbuilder.CredentialIssueOutput{
 		Secret: secret,
 		PlaintextData: []*v2.PlaintextData{
-			v2.PlaintextData_builder{Name: "api_key", Bytes: []byte(resp.GetToken())}.Build(),
+			v2.PlaintextData_builder{Name: plaintextName, Bytes: value}.Build(),
 		},
 		ResourceMode: v2.CredentialResourceMode_CREDENTIAL_RESOURCE_MODE_DISCOVERABLE,
 	}, nil
