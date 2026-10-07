@@ -243,9 +243,12 @@ key is.
   through the request's vault; if the secret is lost, revoke the key and request
   a new one.
 - Expiry is set on the provider. When the request supplies a lifetime, the
-  connector passes that exact instant to Temporal Cloud and reads it back to
-  confirm the provider stored it. When the request supplies none, the connector
-  applies a **90-day** default of its own.
+  connector passes that exact instant to Temporal Cloud, reads it back, and
+  reports the expiry **the provider recorded** — not the one it asked for. An
+  expiry later than the approved deadline is refused outright and the key is
+  rolled back: the connector will not return a credential that outlives what was
+  approved. When the request supplies none, the connector applies a **90-day**
+  default of its own.
 - The accepted window is **1 minute to 2 years**. The 2-year ceiling is Temporal
   Cloud's documented maximum; the 1-minute floor is the connector's own, since
   Temporal Cloud documents no minimum API-key lifetime. The default and the
@@ -256,16 +259,23 @@ key is.
 - Temporal Cloud limits each service account to **20 non-expired API keys**.
   When that limit is reached, issuance fails with the provider's error and no
   key is created; revoke an existing key and retry.
-- A retried request never creates a second key. Each request carries a
+- A retried request does not create a second key. Each request carries a
   deterministic identity derived from its C1 request id, and the connector
-  refuses to mint when a credential for that identity already exists — checking
-  the provider's own operation record as well as the key listing, so a create
-  whose response was lost is still detected when the listing has not caught up.
-  Temporal Cloud returns a key's secret only once, so an existing key cannot be
-  handed back: the connector reports the existing key's id instead, and an
-  operator must revoke it before re-requesting.
+  refuses to mint when a credential for that identity already exists. It checks
+  the key listing first, and consults the provider's own operation record as a
+  second, independent read. Temporal Cloud returns a key's secret only once, so
+  an existing key cannot be handed back: the connector reports the existing
+  key's id instead, and an operator must revoke it before re-requesting.
+- Two attempts that reach the provider concurrently are the one case this does
+  not cover. Each carries the same request identity, so a provider that
+  deduplicates on it will collapse them — but Temporal Cloud does not document
+  that it does, and the connector holds no lock. Containment there comes from C1
+  serialising issuance for a request and not retrying an ambiguous issuance
+  automatically.
 - When the provider gives no verdict — an unreadable operation record, an
   unreadable key listing, or a create whose outcome is unknown — the connector
   fails closed rather than minting. It never deletes a key it cannot prove was
   never delivered, because deleting a delivered credential would be a silent
-  revocation; a key left behind is named in the error instead.
+  revocation; a key left behind is named in the error instead. A create that
+  reports failure is likewise not proof that nothing was created, which is why
+  the key listing is consulted before any mint.

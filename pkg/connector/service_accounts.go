@@ -125,9 +125,12 @@ func (o *serviceAccountBuilder) IssueCapabilityDetails(_ context.Context) (*v2.C
 // replay or deduplication on it. The connector therefore treats it as a request
 // identity it can OBSERVE after the fact rather than as a guarantee. Before
 // creating anything it asks the provider whether that operation already exists,
-// which detects a create whose response was lost even when the provider's key
-// listing has not caught up yet. Whether two concurrent creates with the same
-// operation id collapse into one key is the provider's contract, not this
+// as a SECOND signal alongside the key listing: the operation record is a
+// different read, so it catches a create whose response was lost in cases the
+// listing would miss. It is not claimed to be immediate -- a provider that has
+// not yet recorded the operation answers like a first attempt, and the by-name
+// lookup remains the primary guard. Whether two concurrent creates with the
+// same operation id collapse into one key is the provider's contract, not this
 // connector's: the connector supplies the identity and does not rely on it.
 //
 // # Why a retry cannot re-deliver
@@ -162,14 +165,21 @@ func (o *serviceAccountBuilder) IssueCapabilityDetails(_ context.Context) (*v2.C
 //     naming the key when the listing shows it. One credential exists, but its
 //     secret was never delivered, so it is unusable; the error tells an operator
 //     to revoke it and re-request.
-//   - Create committed, listing lagging: the operation read-back refuses even
-//     though the listing is empty, so no duplicate is minted. One.
+//   - Create committed, listing lagging: when the operation record is visible
+//     before the key listing catches up, the operation read-back refuses even
+//     though the listing is empty, so no duplicate is minted. This is the case
+//     the second read buys; it is not a claim that the operation record is
+//     always ahead of the listing, and when neither shows the key the mint
+//     proceeds exactly as it would for a first attempt.
 //   - Operation record or key listing unreadable: fails closed with the
 //     provider's own code. Nothing is minted. Unchanged.
 //   - Create fails unambiguously: the provider's error is returned, augmented
 //     for the key limit. Nothing was created; a later retry may mint.
-//   - Operation FAILED or CANCELLED: mints, because a failed operation created
-//     nothing. Exactly one.
+//   - Operation FAILED or CANCELLED: the operation record does not forbid a
+//     mint, so issuance continues -- but a failed operation is NOT proof that
+//     nothing was created, which is why the by-name lookup runs next and
+//     refuses when a key is there. The listing, not the operation state, is the
+//     guard against a duplicate.
 //   - Read-back disagrees with the request, or the response carries no secret:
 //     the key is rolled back and the failure is returned. Zero, or one the error
 //     names as possibly remaining when cleanup itself failed.
@@ -244,8 +254,10 @@ func (o *serviceAccountBuilder) Issue(ctx context.Context, input *connectorbuild
 	}
 
 	// The provider's own record is the authority for owner and expiry. What
-	// this connector asked for is not evidence of what the provider stored.
-	if err := o.verifyIssuedAPIKey(ctx, keyID, ownerID, expiresAt); err != nil {
+	// this connector asked for is not evidence of what the provider stored, so
+	// the returned instant is the one the provider reported.
+	actualExpiry, err := o.verifyIssuedAPIKey(ctx, keyID, ownerID, expiresAt)
+	if err != nil {
 		return nil, o.rollbackCreatedAPIKey(ctx, keyID, ownerID, err)
 	}
 
@@ -256,7 +268,7 @@ func (o *serviceAccountBuilder) Issue(ctx context.Context, input *connectorbuild
 		rs.WithSecretIdentityID(input.IdentityID),
 		rs.WithSecretType(v2.SecretTrait_CREDENTIAL_TYPE_STATIC_SECRET),
 		rs.WithSecretDetail(apiKeyCredentialDetail),
-		rs.WithSecretExpiresAt(expiresAt),
+		rs.WithSecretExpiresAt(actualExpiry),
 	}, rs.WithParentResourceID(input.IdentityID), rs.WithResourceCreatedAt(now))
 	if err != nil {
 		return nil, o.rollbackCreatedAPIKey(ctx, keyID, ownerID,
@@ -288,7 +300,12 @@ func (o *serviceAccountBuilder) apiKeyOperationFulfilled(ctx context.Context, op
 	}
 	switch resp.GetAsyncOperation().GetState() {
 	case operationv1.AsyncOperation_STATE_FAILED, operationv1.AsyncOperation_STATE_CANCELLED:
-		// A failed operation created nothing, so this request may still mint.
+		// A failed or cancelled operation is NOT proof that nothing was
+		// created: a create can commit and then report a failure. This is why
+		// the caller runs the by-name lookup next and refuses when a key is
+		// there -- the listing, not the operation state, is the guard against a
+		// duplicate. Proceeding here only says "the operation record does not
+		// itself forbid a mint".
 		return false, nil
 	default:
 		return true, nil
@@ -296,36 +313,49 @@ func (o *serviceAccountBuilder) apiKeyOperationFulfilled(ctx context.Context, op
 }
 
 // verifyIssuedAPIKey confirms from the provider's own record that the key it
-// created belongs to the requested service account and carries the expiry that
-// was requested.
+// created belongs to the requested service account and does not outlive the
+// approved expiry. It returns the expiry the provider actually recorded.
 //
-// The expiry comparison allows a minute of slack because the provider rounds
-// the instant it stores; the check exists to catch a provider that ignored or
-// capped the request, not to police sub-second rounding.
-func (o *serviceAccountBuilder) verifyIssuedAPIKey(ctx context.Context, keyID, ownerID string, expiresAt time.Time) error {
+// The comparison is deliberately one-sided. A provider expiry LATER than the
+// approved deadline is rejected outright, with no tolerance: the credential
+// would outlive the lifetime that was approved, which is the one direction that
+// matters. An expiry EARLIER than requested is accepted within
+// apiKeyExpiryReadbackTolerance, because the provider rounds the instant it
+// stores and a shorter-lived credential is not a safety problem.
+//
+// The returned instant is the provider's, not the requested one. Returning the
+// requested value would report an expiry the provider never confirmed, which is
+// the same class of error as accepting a timestamp as evidence of a stored one.
+func (o *serviceAccountBuilder) verifyIssuedAPIKey(ctx context.Context, keyID, ownerID string, approvedExpiry time.Time) (time.Time, error) {
 	resp, err := o.client.GetApiKey(ctx, &cloudservicev1.GetApiKeyRequest{KeyId: keyID})
 	if err != nil {
-		return fmt.Errorf("baton-temporalcloud: failed to read back issued API key %q: %w", keyID, err)
+		return time.Time{}, fmt.Errorf("baton-temporalcloud: failed to read back issued API key %q: %w", keyID, err)
 	}
 	spec := resp.GetApiKey().GetSpec()
 	if spec.GetOwnerId() != ownerID {
-		return status.Errorf(codes.Internal,
+		return time.Time{}, status.Errorf(codes.Internal,
 			"baton-temporalcloud: provider recorded API key %q against owner %q, not the requested %q", keyID, spec.GetOwnerId(), ownerID)
 	}
 	if spec.GetOwnerType() != identityv1.OwnerType_OWNER_TYPE_SERVICE_ACCOUNT {
-		return status.Errorf(codes.Internal,
+		return time.Time{}, status.Errorf(codes.Internal,
 			"baton-temporalcloud: provider recorded API key %q against owner type %s, not a service account", keyID, spec.GetOwnerType())
 	}
 	providerExpiry := spec.GetExpiryTime()
 	if providerExpiry == nil {
-		return status.Errorf(codes.Internal, "baton-temporalcloud: provider recorded API key %q with no expiry", keyID)
+		return time.Time{}, status.Errorf(codes.Internal, "baton-temporalcloud: provider recorded API key %q with no expiry", keyID)
 	}
-	if delta := providerExpiry.AsTime().Sub(expiresAt); delta > apiKeyExpiryReadbackTolerance || delta < -apiKeyExpiryReadbackTolerance {
-		return status.Errorf(codes.Internal,
-			"baton-temporalcloud: provider recorded API key %q expiring at %s, not the requested %s",
-			keyID, providerExpiry.AsTime().UTC(), expiresAt.UTC())
+	actual := providerExpiry.AsTime()
+	if actual.After(approvedExpiry) {
+		return time.Time{}, status.Errorf(codes.Internal,
+			"baton-temporalcloud: provider recorded API key %q expiring at %s, beyond the approved %s",
+			keyID, actual.UTC(), approvedExpiry.UTC())
 	}
-	return nil
+	if approvedExpiry.Sub(actual) > apiKeyExpiryReadbackTolerance {
+		return time.Time{}, status.Errorf(codes.Internal,
+			"baton-temporalcloud: provider recorded API key %q expiring at %s, materially earlier than the requested %s",
+			keyID, actual.UTC(), approvedExpiry.UTC())
+	}
+	return actual, nil
 }
 
 // rollbackCreatedAPIKey deletes a key this call created but cannot deliver, and
@@ -333,11 +363,20 @@ func (o *serviceAccountBuilder) verifyIssuedAPIKey(ctx context.Context, keyID, o
 //
 // A cleanup failure never replaces the original cause: the caller must still
 // learn why issuance failed. It is appended instead, so an operator is also
-// told that a key may remain at the provider. The delete is awaited, and the
-// wait deliberately outlives a canceled or expired caller context -- cleanup
-// must not be abandoned because the request that triggered it was.
+// told that a key may remain at the provider.
+//
+// The whole cleanup -- the delete and the wait for its asynchronous result --
+// runs on one bounded context derived with context.WithoutCancel, because
+// cleanup must not be abandoned by the request that triggered it. The caller's
+// context is typically already cancelled or past its deadline at this point (a
+// read-back that failed because the request expired is the common way to get
+// here), so passing it to the delete would mean the delete never leaves the
+// process and the key is silently left behind.
 func (o *serviceAccountBuilder) rollbackCreatedAPIKey(ctx context.Context, keyID, ownerID string, cause error) error {
-	resp, err := o.client.DeleteApiKey(ctx, &cloudservicev1.DeleteApiKeyRequest{KeyId: keyID})
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), apiKeyDeletionMaxDuration)
+	defer cancel()
+
+	resp, err := o.client.DeleteApiKey(cleanupCtx, &cloudservicev1.DeleteApiKeyRequest{KeyId: keyID})
 	if err != nil {
 		if status.Code(err) == codes.NotFound {
 			return cause
@@ -354,11 +393,9 @@ func (o *serviceAccountBuilder) rollbackCreatedAPIKey(ctx context.Context, keyID
 	if opID == "" {
 		return cause
 	}
-	waitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), apiKeyDeletionMaxDuration)
-	defer cancel()
 	l := ctxzap.Extract(ctx).With(zap.String("request_id", opID), zap.String("api_key_id", keyID))
 	retryDelay := asyncCheckDelay(resp.GetAsyncOperation().GetCheckDuration().AsDuration())
-	if waitErr := awaitAsyncOperation(waitCtx, l, o.client, opID, retryDelay); waitErr != nil {
+	if waitErr := awaitAsyncOperation(cleanupCtx, l, o.client, opID, retryDelay); waitErr != nil {
 		ctxzap.Extract(ctx).Warn(
 			"baton-temporalcloud: API key cleanup did not complete",
 			zap.String("api_key_id", keyID),

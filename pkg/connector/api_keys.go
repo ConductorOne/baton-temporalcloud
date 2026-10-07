@@ -65,10 +65,14 @@ const (
 	// apiKeyDefaultTTL, which is a connector default, not a provider limit.
 	apiKeyMaxTTL = 2 * 365 * 24 * time.Hour
 
-	// apiKeyExpiryReadbackTolerance is how far the expiry the provider reports
-	// may differ from the one requested before issuance fails. The provider
-	// rounds the instant it stores; the check exists to catch a provider that
-	// ignored or capped the request, not to police rounding.
+	// apiKeyExpiryReadbackTolerance bounds how much EARLIER than requested the
+	// expiry the provider reports may be before issuance fails. The provider
+	// rounds the instant it stores, so a slightly shorter lifetime is expected.
+	//
+	// The comparison is one-sided on purpose: a provider expiry LATER than the
+	// approved deadline is rejected with no tolerance at all, because a
+	// credential that outlives its approved lifetime is the direction that
+	// matters. This constant never licenses a later expiry.
 	apiKeyExpiryReadbackTolerance = time.Minute
 
 	// apiKeyDeletionMaxDuration bounds the wait for the provider's

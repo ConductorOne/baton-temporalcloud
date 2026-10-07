@@ -148,7 +148,12 @@ func newIssuanceFake(t *testing.T, ownerID string, expiresAt time.Time) *issuanc
 				Spec:            spec,
 			}}, nil
 		},
-		deleteApiKey: func(_ context.Context, in *cloudservicev1.DeleteApiKeyRequest) (*cloudservicev1.DeleteApiKeyResponse, error) {
+		deleteApiKey: func(ctx context.Context, in *cloudservicev1.DeleteApiKeyRequest) (*cloudservicev1.DeleteApiKeyResponse, error) {
+			// The whole point of the rollback context: a delete that ran on the
+			// caller's context would never leave the process when the caller is
+			// already cancelled or past its deadline, silently leaving the key
+			// behind. Asserting here makes that regression fail loudly.
+			require.NoError(t, ctx.Err(), "cleanup must not run on an already-cancelled caller context")
 			f.deleted = append(f.deleted, in)
 			return &cloudservicev1.DeleteApiKeyResponse{}, nil
 		},
@@ -500,6 +505,23 @@ func TestIssueAPIKeyRejectsUnverifiedProviderRecord(t *testing.T) {
 			}},
 		},
 		{
+			// Thirty seconds past the approved deadline: inside the old
+			// two-sided tolerance, and still a credential that outlives what
+			// was approved. The comparison must be one-sided.
+			name: "expiry marginally beyond the approved deadline",
+			record: &identityv1.ApiKey{Id: "key-1", Spec: &identityv1.ApiKeySpec{
+				OwnerId: "sa-1", OwnerType: identityv1.OwnerType_OWNER_TYPE_SERVICE_ACCOUNT,
+				ExpiryTime: timestamppb.New(expiresAt.Add(30 * time.Second)),
+			}},
+		},
+		{
+			name: "expiry materially earlier than requested",
+			record: &identityv1.ApiKey{Id: "key-1", Spec: &identityv1.ApiKeySpec{
+				OwnerId: "sa-1", OwnerType: identityv1.OwnerType_OWNER_TYPE_SERVICE_ACCOUNT,
+				ExpiryTime: timestamppb.New(expiresAt.Add(-5 * time.Minute)),
+			}},
+		},
+		{
 			name: "no expiry recorded",
 			record: &identityv1.ApiKey{Id: "key-1", Spec: &identityv1.ApiKeySpec{
 				OwnerId: "sa-1", OwnerType: identityv1.OwnerType_OWNER_TYPE_SERVICE_ACCOUNT,
@@ -545,20 +567,36 @@ func TestIssueAPIKeyRollsBackWhenProviderReturnsNoSecret(t *testing.T) {
 // TestIssueAPIKeyRollbackSurvivesCanceledContext proves cleanup is attempted
 // even when the caller's context is already done, and that the original cause
 // survives a cleanup failure instead of being replaced by it.
+//
+// The context is cancelled at the read-back, which is how this happens in
+// production: the request expires, the read-back fails, and cleanup runs on a
+// context that is already dead. The fake asserts the delete's context is live,
+// so passing the caller's context through would fail the first subtest.
 func TestIssueAPIKeyRollbackSurvivesCanceledContext(t *testing.T) {
 	t.Parallel()
 
 	t.Run("cleanup succeeds despite a canceled caller", func(t *testing.T) {
 		t.Parallel()
 
-		fake := newIssuanceFake(t, "sa-1", time.Now().Add(time.Hour))
-		fake.noSecret = true
 		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
+		fake := newIssuanceFake(t, "sa-1", time.Now().Add(time.Hour))
+		// A provider record that disagrees with the request forces the
+		// rollback path.
+		fake.record = &identityv1.ApiKey{Id: "key-1", Spec: &identityv1.ApiKeySpec{
+			OwnerId:   "someone-else",
+			OwnerType: identityv1.OwnerType_OWNER_TYPE_SERVICE_ACCOUNT,
+		}}
+		inner := fake.fakeCloudService.getApiKey
+		fake.fakeCloudService.getApiKey = func(c context.Context, in *cloudservicev1.GetApiKeyRequest) (*cloudservicev1.GetApiKeyResponse, error) {
+			resp, err := inner(c, in)
+			cancel() // the request expires here
+			return resp, err
+		}
 
 		_, err := fake.issue(ctx, "req-canceled")
 		require.Error(t, err)
 		require.Len(t, fake.deleted, 1, "cleanup must not be abandoned because the caller gave up")
+		require.Equal(t, "key-1", fake.deleted[0].GetKeyId())
 	})
 
 	t.Run("cleanup failure preserves the original cause", func(t *testing.T) {
@@ -577,6 +615,41 @@ func TestIssueAPIKeyRollbackSurvivesCanceledContext(t *testing.T) {
 		require.ErrorContains(t, err, "may remain at the provider",
 			"the caller must be told a key may have been left behind")
 	})
+}
+
+// TestIssueAPIKeyReportsTheProviderExpiry proves the returned credential
+// carries the expiry the provider actually recorded, not the one that was
+// requested. Reporting the requested instant would assert an expiry the
+// provider never confirmed.
+func TestIssueAPIKeyReportsTheProviderExpiry(t *testing.T) {
+	t.Parallel()
+
+	requested := time.Now().Add(4 * time.Hour).Truncate(time.Second)
+	// The provider rounds down by 30 seconds: accepted, and what must be
+	// reported back.
+	providerExpiry := requested.Add(-30 * time.Second)
+	fake := newIssuanceFake(t, "sa-1", requested)
+	fake.record = &identityv1.ApiKey{Id: "key-1", Spec: &identityv1.ApiKeySpec{
+		OwnerId:     "sa-1",
+		OwnerType:   identityv1.OwnerType_OWNER_TYPE_SERVICE_ACCOUNT,
+		DisplayName: issuedCredentialName("req-actual"),
+		ExpiryTime:  timestamppb.New(providerExpiry),
+	}}
+
+	out, err := newServiceAccountBuilder(fake.fakeCloudService).Issue(context.Background(), &connectorbuilder.CredentialIssueInput{
+		IdentityID:        &v2.ResourceId{ResourceType: serviceAccountResourceType.Id, Resource: "sa-1"},
+		CredentialOptions: apiKeyIssueOptions(),
+		ExpiresAt:         timestamppb.New(requested),
+		RequestID:         "req-actual",
+	})
+	require.NoError(t, err)
+	require.Empty(t, fake.deleted, "an accepted rounding must not roll the key back")
+
+	trait := secretTrait(t, out.Secret)
+	require.True(t, providerExpiry.Equal(trait.GetExpiresAt().AsTime()),
+		"the credential must report the provider's expiry, not the requested one")
+	require.False(t, trait.GetExpiresAt().AsTime().After(requested),
+		"the reported expiry must never exceed the approved deadline")
 }
 
 // TestIssueAPIKeyRejectsUnexpectedRequests keeps the arm honest for a caller
