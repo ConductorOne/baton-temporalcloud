@@ -859,6 +859,10 @@ func TestDeleteAPIKeyTreatsAlreadyGoneAsSuccess(t *testing.T) {
 // already-gone key idempotent without asking the provider to delete something it
 // has already deleted: a provider that refuses that would turn a no-op revoke
 // into a failure, contradicting the documented idempotency.
+//
+// DELETING is not in this table. A key the provider is still deleting is not
+// gone -- it can still authenticate -- so Delete waits it out rather than
+// reporting success; that behaviour is covered below.
 func TestDeleteAPIKeySkipsAKeyTheProviderAlreadyRetired(t *testing.T) {
 	t.Parallel()
 
@@ -867,7 +871,6 @@ func TestDeleteAPIKeySkipsAKeyTheProviderAlreadyRetired(t *testing.T) {
 		state resourcev1.ResourceState
 	}{
 		{name: "deleted", state: resourcev1.ResourceState_RESOURCE_STATE_DELETED},
-		{name: "deleting", state: resourcev1.ResourceState_RESOURCE_STATE_DELETING},
 		{name: "expired", state: resourcev1.ResourceState_RESOURCE_STATE_EXPIRED},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -889,6 +892,92 @@ func TestDeleteAPIKeySkipsAKeyTheProviderAlreadyRetired(t *testing.T) {
 			require.NoError(t, err)
 		})
 	}
+}
+
+// TestDeleteAPIKeyWaitsOutAKeyTheProviderIsDeleting proves a revoke of a key
+// the provider is mid-delete does not report success until the key can no
+// longer authenticate, and never issues a second delete for it.
+func TestDeleteAPIKeyWaitsOutAKeyTheProviderIsDeleting(t *testing.T) {
+	t.Parallel()
+
+	reads := 0
+	fake := &fakeCloudService{
+		getApiKey: func(context.Context, *cloudservicev1.GetApiKeyRequest) (*cloudservicev1.GetApiKeyResponse, error) {
+			reads++
+			state := resourcev1.ResourceState_RESOURCE_STATE_DELETING
+			if reads > 1 {
+				state = resourcev1.ResourceState_RESOURCE_STATE_DELETED
+			}
+			return &cloudservicev1.GetApiKeyResponse{ApiKey: &identityv1.ApiKey{
+				Id: "key-1", State: state, ResourceVersion: "v1",
+			}}, nil
+		},
+		deleteApiKey: func(context.Context, *cloudservicev1.DeleteApiKeyRequest) (*cloudservicev1.DeleteApiKeyResponse, error) {
+			t.Fatal("a key the provider is already deleting must not be deleted again")
+			return nil, nil
+		},
+	}
+
+	_, err := newAPIKeyBuilder(fake).Delete(context.Background(), &v2.ResourceId{ResourceType: apiKeyResourceType.Id, Resource: "key-1"}, nil)
+	require.NoError(t, err)
+	require.Greater(t, reads, 1, "the wait must observe the key reaching a terminal state, not assume it")
+}
+
+// TestDeleteAPIKeyTreatsAKeyVanishingWhileDeletingAsRetired proves the wait also
+// ends successfully when the provider stops listing the key, which is the state
+// a completed delete produces.
+func TestDeleteAPIKeyTreatsAKeyVanishingWhileDeletingAsRetired(t *testing.T) {
+	t.Parallel()
+
+	reads := 0
+	fake := &fakeCloudService{
+		getApiKey: func(context.Context, *cloudservicev1.GetApiKeyRequest) (*cloudservicev1.GetApiKeyResponse, error) {
+			reads++
+			if reads > 1 {
+				return nil, status.Error(codes.NotFound, "no such key")
+			}
+			return &cloudservicev1.GetApiKeyResponse{ApiKey: &identityv1.ApiKey{
+				Id: "key-1", State: resourcev1.ResourceState_RESOURCE_STATE_DELETING, ResourceVersion: "v1",
+			}}, nil
+		},
+		deleteApiKey: func(context.Context, *cloudservicev1.DeleteApiKeyRequest) (*cloudservicev1.DeleteApiKeyResponse, error) {
+			t.Fatal("a key the provider is already deleting must not be deleted again")
+			return nil, nil
+		},
+	}
+
+	_, err := newAPIKeyBuilder(fake).Delete(context.Background(), &v2.ResourceId{ResourceType: apiKeyResourceType.Id, Resource: "key-1"}, nil)
+	require.NoError(t, err)
+}
+
+// TestDeleteAPIKeyFailsWhenAKeyNeverStopsDeleting proves the wait is bounded:
+// a provider that never settles fails the revoke rather than reporting a
+// success it cannot support, and still never issues a second delete.
+//
+// The bound is exercised through the caller's context, so the test does not
+// have to wait out apiKeyDeletionMaxDuration to prove it exists.
+func TestDeleteAPIKeyFailsWhenAKeyNeverStopsDeleting(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeCloudService{
+		getApiKey: func(context.Context, *cloudservicev1.GetApiKeyRequest) (*cloudservicev1.GetApiKeyResponse, error) {
+			return &cloudservicev1.GetApiKeyResponse{ApiKey: &identityv1.ApiKey{
+				Id: "key-1", State: resourcev1.ResourceState_RESOURCE_STATE_DELETING, ResourceVersion: "v1",
+			}}, nil
+		},
+		deleteApiKey: func(context.Context, *cloudservicev1.DeleteApiKeyRequest) (*cloudservicev1.DeleteApiKeyResponse, error) {
+			t.Fatal("a key the provider is already deleting must not be deleted again")
+			return nil, nil
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := newAPIKeyBuilder(fake).Delete(ctx, &v2.ResourceId{ResourceType: apiKeyResourceType.Id, Resource: "key-1"}, nil)
+	require.Error(t, err, "a revoke must not report success while the key can still authenticate")
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Contains(t, err.Error(), "key-1")
 }
 
 // TestDeleteAPIKeyPropagatesProviderFailure keeps a real provider failure

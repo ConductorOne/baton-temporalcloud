@@ -208,6 +208,15 @@ func (o *apiKeyBuilder) Delete(ctx context.Context, resourceID *v2.ResourceId, _
 		// the opposite of the idempotency this path documents.
 		return nil, nil
 	}
+	if existing.GetApiKey().GetState() == resourcev1.ResourceState_RESOURCE_STATE_DELETING {
+		// The provider is already deleting this key, so a second delete would
+		// ask it to delete something it is in the middle of deleting. It is not
+		// gone either: a key still being torn down can still authenticate, and
+		// reporting success here would tell C1 the revoke had completed while
+		// the credential was still usable. Wait for the state the provider
+		// settles on, the same guarantee a fresh delete gives.
+		return nil, o.awaitAPIKeyRetired(ctx, keyID)
+	}
 
 	resp, err := o.client.DeleteApiKey(ctx, &cloudservicev1.DeleteApiKeyRequest{
 		KeyId:           keyID,
@@ -234,6 +243,40 @@ func (o *apiKeyBuilder) Delete(ctx context.Context, resourceID *v2.ResourceId, _
 	}
 
 	return nil, nil
+}
+
+// awaitAPIKeyRetired waits for a key the provider is already deleting to reach
+// a state where it can no longer authenticate.
+//
+// There is no asynchronous operation id to await here -- the delete was issued
+// by an earlier caller -- so the key's own state is the only signal. The wait is
+// bounded by apiKeyDeletionMaxDuration, the same bound a fresh delete's
+// asynchronous operation gets, so a provider that never settles fails the revoke
+// instead of hanging it. NotFound is success: a key the provider no longer lists
+// is retired for every purpose a revoke cares about.
+func (o *apiKeyBuilder) awaitAPIKeyRetired(ctx context.Context, keyID string) error {
+	waitCtx, cancel := context.WithTimeout(ctx, apiKeyDeletionMaxDuration)
+	defer cancel()
+
+	for {
+		key, err := o.client.GetApiKey(waitCtx, &cloudservicev1.GetApiKeyRequest{KeyId: keyID})
+		if err != nil {
+			if status.Code(err) == codes.NotFound {
+				return nil
+			}
+			return fmt.Errorf("baton-temporalcloud: failed to read API key %q while waiting for its delete: %w", keyID, err)
+		}
+		if apiKeyIsAlreadyGone(key.GetApiKey().GetState()) {
+			return nil
+		}
+
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("baton-temporalcloud: API key %q is still %s after %s: %w",
+				keyID, key.GetApiKey().GetState(), apiKeyDeletionMaxDuration, waitCtx.Err())
+		case <-time.After(apiKeyAsyncCheckFallback):
+		}
+	}
 }
 
 // protoAPIKeyToResource builds the synced resource for one Temporal Cloud API
@@ -309,15 +352,16 @@ func apiKeyIsTerminal(state resourcev1.ResourceState) bool {
 	}
 }
 
-// apiKeyIsAlreadyGone reports whether a key the provider still lists is
-// nonetheless retired for every purpose a revoke cares about: deleted, expiring
-// or expired, or already on its way out. Distinct from apiKeyIsTerminal, which
-// decides what a sync shows; this one decides whether asking the provider to
-// delete the key again is meaningful.
+// apiKeyIsAlreadyGone reports whether a key the provider still lists can no
+// longer authenticate and needs no delete issued for it: deleted or expired.
+// Distinct from apiKeyIsTerminal, which decides what a sync shows.
+//
+// DELETING is deliberately NOT included. A key the provider is still tearing
+// down can still authenticate, so treating it as gone would let a revoke report
+// success while the credential was still usable. Delete waits it out instead.
 func apiKeyIsAlreadyGone(state resourcev1.ResourceState) bool {
 	switch state {
 	case resourcev1.ResourceState_RESOURCE_STATE_DELETED,
-		resourcev1.ResourceState_RESOURCE_STATE_DELETING,
 		resourcev1.ResourceState_RESOURCE_STATE_EXPIRED:
 		return true
 	default:
