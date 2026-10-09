@@ -14,6 +14,7 @@ sidebarTitle: Temporal Cloud
 | Namespaces       | <Icon icon="square-check" iconType="solid"  color="#c937ae"/>    | <Icon icon="square-check" iconType="solid"  color="#c937ae"/>  | 
 | Account roles*     | <Icon icon="square-check" iconType="solid"  color="#c937ae"/>    | <Icon icon="square-check" iconType="solid"  color="#c937ae"/>  |
 | Service accounts | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> |  |
+| API keys | <Icon icon="square-check" iconType="solid"  color="#c937ae"/> |  |
 
 *The Account Owner and Finance Manager roles are synced but cannot be provisioned.
 
@@ -37,7 +38,7 @@ In Temporal Cloud, navigate to your profile page and click **API Keys**.
 Click **Create API Key**. 
 </Step>
 <Step>
-Enter a name and description for the new API key and select an expiration date (90 days is the maximum allowed value). 
+Enter a name and description for the new API key and select an expiration date (Temporal Cloud allows up to 2 years; a shorter lifetime is easier to rotate). 
 </Step>
 <Step>
 Click **Generate API Key**.
@@ -213,3 +214,80 @@ Check that the connector data uploaded correctly. In C1, click **Apps**. On the 
 **Done.** Your Temporal Cloud connector is now pulling access data into C1.
 </Tab>
 </Tabs>
+
+## Credential vending
+
+C1 can vend Temporal Cloud API keys for existing service accounts, and revoke
+them again. This section describes what the connector requires and what a vended
+key is.
+
+### Requirements
+
+- The connector's API key must belong to an identity that may create and manage
+  service-account API keys: a **Global Administrator** or **Account Owner**.
+  Namespace Admins can manage keys for the Namespace-scoped service accounts
+  they administer, but not account-wide ones.
+- **Sync of the API keys resource type needs account-wide read as well.** The
+  connector lists every API key in the account to build that inventory, and
+  Temporal Cloud lets only Global Administrators and Account Owners monitor
+  another identity's keys. A lesser principal may be refused, or may see only
+  its own keys — which C1 would read as every other key having been deleted. Use
+  a Global Administrator or Account Owner credential for a tenant that selects
+  the API keys resource type.
+- The service account that receives the credential must already exist and be
+  synced into C1. C1 never creates a service account to satisfy a request.
+- The **API keys** resource type must be selected in the connector's sync
+  selection. C1 skips a credential offering whose secret resource type is not
+  synced, so the offering does not appear until the type is selected and a sync
+  has completed.
+
+### Vended credentials
+
+- A vended key belongs to the service account the request targets and inherits
+  that account's permissions. The connector does not create or modify users,
+  service accounts, or their namespace assignments.
+- Temporal Cloud shows a key's secret only once, at creation. C1 delivers it
+  through the request's vault; if the secret is lost, revoke the key and request
+  a new one.
+- Expiry is set on the provider. When the request supplies a lifetime, the
+  connector passes that exact instant to Temporal Cloud, reads it back, and
+  reports the expiry **the provider recorded** — not the one it asked for. An
+  expiry later than the approved deadline is refused outright and the key is
+  rolled back: the connector will not return a credential that outlives what was
+  approved. When the request supplies none, the connector applies a **90-day**
+  default of its own.
+- The accepted window is **1 minute to 2 years**. The 2-year ceiling is Temporal
+  Cloud's documented maximum; the 1-minute floor is the connector's own, since
+  Temporal Cloud documents no minimum API-key lifetime. The default and the
+  floor are connector policy, not provider limits.
+- Revoking a credential deletes that one API key at Temporal Cloud. The service
+  account, its other keys, and its namespace assignments are left untouched. A
+  key that is already gone is treated as successfully revoked.
+- Temporal Cloud limits each service account to **20 non-expired API keys**.
+  When that limit is reached, issuance fails with the provider's error and no
+  key is created; revoke an existing key and retry.
+- A retried request does not create a second key. Each request carries a
+  deterministic identity derived from its C1 request id, and the connector
+  refuses to mint when a credential for that identity already exists. It checks
+  the key listing first, and consults the provider's own operation record as a
+  second, independent read. Temporal Cloud returns a key's secret only once, so
+  an existing key cannot be handed back: the connector reports the existing
+  key's id instead, and the request id is then spent — revoke that key if it is
+  not in use, and **raise a new request**. When no key is found, there is
+  nothing to revoke and a new request is still required.
+- Two attempts that reach the provider concurrently are the one case this does
+  not cover. Each carries the same request identity, so a provider that
+  deduplicates on it will collapse them — but Temporal Cloud does not document
+  that it does, and the connector holds no lock. Containment there comes from C1
+  serialising issuance for a request and not retrying an ambiguous issuance
+  automatically.
+- When the provider gives no verdict — an unreadable operation record, an
+  unreadable key listing, or a create whose outcome is unknown — the connector
+  fails closed rather than minting. It never deletes a key it cannot prove was
+  never delivered, because deleting a delivered credential would be a silent
+  revocation; a key left behind is named in the error instead.
+- An attempt that reports failure does not license a second one. If the provider
+  recorded an operation for the request, the connector refuses even when the key
+  listing is empty: the failure does not prove no key was created — a create can
+  commit and then report a failure — and an empty listing does not supply that
+  proof either. The request id is spent; raise a new request.
