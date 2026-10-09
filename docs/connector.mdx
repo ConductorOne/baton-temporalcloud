@@ -249,6 +249,10 @@ key is.
 - Temporal Cloud shows a key's secret only once, at creation. C1 delivers it
   through the request's vault; if the secret is lost, revoke the key and request
   a new one.
+- The delivered value is the API-key document the C1 client catalog declares for
+  an API key: content type `api_key_v2`, a flat JSON object whose `key_value`
+  holds the key itself and whose `key_id` holds the provider's id for it. The
+  key is never wrapped in a second layer of JSON and no field is renamed.
 - Expiry is set on the provider. When the request supplies a lifetime, the
   connector passes that exact instant to Temporal Cloud, reads it back, and
   reports the expiry **the provider recorded** — not the one it asked for. An

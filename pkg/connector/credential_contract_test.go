@@ -141,8 +141,8 @@ func TestIssuanceRefusesUnadvertisedOptionShape(t *testing.T) {
 func TestIssuanceCarriesArbitraryBytesThroughEncryption(t *testing.T) {
 	t.Parallel()
 
-	// A value that is not a bare token: opaque JSON with characters an
-	// over-eager normalizer would mangle. The path must not care.
+	// A token carrying characters an over-eager normalizer would mangle. It is
+	// embedded verbatim as the document's key_value; the path must not care.
 	const opaque = `{"key":"abc-123","note":"padded  spaces","nested":{"n":1}}`
 	fake := newIssuanceFake(t, "sa-1", time.Now().Add(time.Hour))
 	fake.token = opaque
@@ -155,11 +155,14 @@ func TestIssuanceCarriesArbitraryBytesThroughEncryption(t *testing.T) {
 	))
 	require.NoError(t, err)
 	require.Len(t, resp.GetEncryptedData(), 1)
-	require.Equal(t, "api_key", resp.GetEncryptedData()[0].GetName(),
+	require.Equal(t, apiKeyV2ContentType, resp.GetEncryptedData()[0].GetName(),
 		"the connector's field name must survive encryption")
 	require.Equal(t, apiKeyResourceType.Id, resp.GetSecret().GetId().GetResourceType(),
 		"the issued resource must carry the advertised secret resource type")
 	require.Equal(t, "key-1", resp.GetSecret().GetId().GetResource())
+
+	want, err := apiKeyV2Value(opaque, "key-1")
+	require.NoError(t, err)
 
 	// The recipient side: decrypt with the private key and compare bytes.
 	decryptor, err := providers.GetDecryptionProviderForConfig(context.Background(), &providers.DecryptionConfig{
@@ -169,9 +172,9 @@ func TestIssuanceCarriesArbitraryBytesThroughEncryption(t *testing.T) {
 	require.NoError(t, err)
 	plaintext, err := decryptor.Decrypt(context.Background(), resp.GetEncryptedData()[0], privateKey)
 	require.NoError(t, err)
-	require.Equal(t, opaque, string(plaintext.GetBytes()),
+	require.Equal(t, string(want), string(plaintext.GetBytes()),
 		"the recipient must receive exactly the bytes the connector produced")
-	require.Equal(t, "api_key", plaintext.GetName())
+	require.Equal(t, apiKeyV2ContentType, plaintext.GetName())
 }
 
 // TestIssuanceBindsTheReturnedResourceTypeToTheDeclaration proves the typed
