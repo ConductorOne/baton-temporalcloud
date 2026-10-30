@@ -38,7 +38,14 @@ baton resources
 `baton-temporalcloud` will pull down information about the following Temporal Cloud resources:
 - Namespaces
 - Users
+- Service Accounts
 - Account Roles
+- API Keys
+
+It also supports credential vending: C1 can issue a Temporal Cloud API key for
+an existing service account and revoke it again. See
+[docs/connector.mdx](docs/connector.mdx#credential-vending) for the required
+issuer permissions and the expiry and revocation behavior.
 
 # Contributing, Support and Issues
 
