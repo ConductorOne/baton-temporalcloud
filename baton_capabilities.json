@@ -17,6 +17,26 @@
     },
     {
       "resourceType": {
+        "id": "group",
+        "displayName": "User Group",
+        "traits": [
+          "TRAIT_GROUP"
+        ],
+        "annotations": [
+          {
+            "@type": "type.googleapis.com/c1.connector.v2.OptInRequired"
+          }
+        ]
+      },
+      "capabilities": [
+        "CAPABILITY_SYNC",
+        "CAPABILITY_PROVISION"
+      ],
+      "permissions": {},
+      "optInRequired": true
+    },
+    {
+      "resourceType": {
         "id": "namespace",
         "displayName": "Namespace"
       },

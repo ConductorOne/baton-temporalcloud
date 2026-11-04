@@ -14,6 +14,7 @@ import (
 
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
+	"github.com/conductorone/baton-sdk/pkg/types/entitlement"
 	"github.com/conductorone/baton-sdk/pkg/types/grant"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/fatih/camelcase"
@@ -88,6 +89,45 @@ func protoAccountRoleToResource(proto identityv1.AccountAccess_Role, accountID s
 	return role, nil
 }
 
+// protoUserGroupToResource builds a group resource. The group kind is recorded
+// in the group profile because it determines whether membership is manageable
+// through Temporal Cloud's member APIs (Cloud groups) or owned by an external
+// identity provider (SCIM and Google groups).
+func protoUserGroupToResource(group *identityv1.UserGroup) (*v2.Resource, error) {
+	spec := group.GetSpec()
+
+	profile := map[string]interface{}{}
+	switch kind := groupKindFromSpec(spec); kind {
+	case groupKindGoogle:
+		profile["group_kind"] = kind
+		profile["google_email"] = spec.GetGoogleGroup().GetEmailAddress()
+	case groupKindScim:
+		profile["group_kind"] = kind
+		profile["scim_idp_id"] = spec.GetScimGroup().GetIdpId()
+	default:
+		profile["group_kind"] = kind
+	}
+
+	annos := &v2.V1Identifier{
+		Id: fmt.Sprintf("group:%s", group.GetId()),
+	}
+
+	displayName := spec.GetDisplayName()
+	if displayName == "" {
+		displayName = group.GetId()
+	}
+
+	groupResource, err := rs.NewGroupResource(displayName, groupResourceType, group.GetId(), nil,
+		rs.WithResourceCreatedAt(group.GetCreatedTime().AsTime()),
+		rs.WithAnnotation(annos),
+		rs.WithResourceProfile(profile),
+	)
+	if err != nil {
+		return nil, err
+	}
+	return groupResource, nil
+}
+
 func createNamespaceGrant(user *identityv1.User, namespace *v2.Resource, permission identityv1.NamespaceAccess_Permission) (*v2.Grant, error) {
 	perm := namespacePermissionName(permission)
 	ur, err := protoUserToResource(user)
@@ -126,6 +166,44 @@ func createAccountRoleGrant(user *identityv1.User, ar *v2.Resource, accountID st
 
 	g := grant.NewGrant(ar, roleMemberEntitlement, ur.GetId(), grant.WithAnnotation(annos...))
 	return g, nil
+}
+
+// newGroupAccountRoleGrant builds a grant of an account role to a user group.
+// The grant is expandable over the group's member entitlement so group members
+// transitively receive the role.
+func newGroupAccountRoleGrant(groupResource *v2.Resource, ar *v2.Resource, accountID string) *v2.Grant {
+	annos := []proto.Message{
+		&v2.V1Identifier{
+			Id: grantID(membershipEntitlementID(ar.GetId().GetResource()), groupResource.GetId().GetResource()),
+		},
+		&v2.GrantExpandable{
+			EntitlementIds: []string{entitlement.NewEntitlementID(groupResource, groupMemberEntitlement)},
+		},
+	}
+
+	accountRole := AccountAccessRoleFromID(ar.GetId().GetResource(), accountID)
+	if slices.Contains(immutableAccountRoles, accountRole) {
+		annos = append(annos, &v2.GrantImmutable{})
+	}
+
+	return grant.NewGrant(ar, roleMemberEntitlement, groupResource.GetId(), grant.WithAnnotation(annos...))
+}
+
+// newGroupNamespaceGrant builds a grant of a namespace permission to a user
+// group. The grant is expandable over the group's member entitlement so group
+// members transitively receive the permission.
+func newGroupNamespaceGrant(groupResource *v2.Resource, namespace *v2.Resource, permission identityv1.NamespaceAccess_Permission) *v2.Grant {
+	perm := namespacePermissionName(permission)
+	annos := []proto.Message{
+		&v2.V1Identifier{
+			Id: grantID(namespaceEntitlementID(namespace.GetId().GetResource(), perm), groupResource.GetId().GetResource()),
+		},
+		&v2.GrantExpandable{
+			EntitlementIds: []string{entitlement.NewEntitlementID(groupResource, groupMemberEntitlement)},
+		},
+	}
+
+	return grant.NewGrant(namespace, perm, groupResource.GetId(), grant.WithAnnotation(annos...))
 }
 
 func awaitAsyncOperation(ctx context.Context, l *zap.Logger, client cloudservicev1.CloudServiceClient, requestID string, retryDelay time.Duration) error {
@@ -185,10 +263,33 @@ func paginate[T any](rv T, bag *pagination.Bag, pageToken string) (T, *rs.SyncOp
 	return rv, &rs.SyncOpResults{NextPageToken: token}, nil
 }
 
+// paginateGrants advances the pagination bag used by multi-phase grants syncs.
+// When the current API page is exhausted it moves to the next phase; when no
+// phases remain it returns no results to end the sync.
+func paginateGrants(rv []*v2.Grant, bag *pagination.Bag, pageToken string) ([]*v2.Grant, *rs.SyncOpResults, error) {
+	if pageToken != "" {
+		if err := bag.Next(pageToken); err != nil {
+			return nil, nil, err
+		}
+	} else {
+		bag.Pop()
+	}
+
+	token, err := bag.Marshal()
+	if err != nil {
+		return nil, nil, err
+	}
+	if token == "" {
+		return rv, nil, nil
+	}
+	return rv, &rs.SyncOpResults{NextPageToken: token}, nil
+}
+
 const (
 	membershipEntitlementIDTemplate = "membership:%s"
 	namespaceEntitlementIDTemplate  = "namespace:%s:%s"
 	grantIDTemplate                 = "grant:%s:%s"
+	groupMemberEntitlement          = "member"
 )
 
 func grantID(entitlementID string, userID string) string {
@@ -201,6 +302,25 @@ func membershipEntitlementID(resourceID string) string {
 
 func namespaceEntitlementID(resourceID string, role string) string {
 	return fmt.Sprintf(namespaceEntitlementIDTemplate, resourceID, role)
+}
+
+const (
+	groupKindCloud      = "cloud"
+	groupKindGoogle     = "google"
+	groupKindScim       = "scim"
+	groupKindProfileKey = "group_kind"
+)
+
+func groupKindFromSpec(spec *identityv1.UserGroupSpec) string {
+	switch {
+	case spec.GetCloudGroup() != nil:
+		return groupKindCloud
+	case spec.GetGoogleGroup() != nil:
+		return groupKindGoogle
+	case spec.GetScimGroup() != nil:
+		return groupKindScim
+	}
+	return ""
 }
 
 func fromStringToEnum(prefix string, in string) string {
