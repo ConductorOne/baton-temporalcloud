@@ -138,4 +138,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/conductorone/baton-multipass-sdk => ./local_vendor/baton-multipass-sdk
+replace github.com/conductorone/baton-multipass-sdk => ./local_vendor/baton-multipass-sdk //nolint:gomoddirectives // temporary until the public module exists (IGA-5320)
