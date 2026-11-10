@@ -272,6 +272,9 @@ github.com/cockroachdb/swiss
 # github.com/cockroachdb/tokenbucket v0.0.0-20230807174530-cc333fc44b06
 ## explicit; go 1.19
 github.com/cockroachdb/tokenbucket
+# github.com/conductorone/baton-multipass-sdk v0.0.1 => ./local_vendor/baton-multipass-sdk
+## explicit; go 1.27.3
+github.com/conductorone/baton-multipass-sdk/pkg/multipass
 # github.com/conductorone/baton-sdk v0.44.2
 ## explicit; go 1.27.3
 github.com/conductorone/baton-sdk/internal/atomicfile
@@ -949,3 +952,4 @@ gopkg.in/yaml.v2
 # gopkg.in/yaml.v3 v3.0.1
 ## explicit
 gopkg.in/yaml.v3
+# github.com/conductorone/baton-multipass-sdk => ./local_vendor/baton-multipass-sdk
