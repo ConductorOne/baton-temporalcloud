@@ -147,8 +147,10 @@ func (o *apiKeyBuilder) ResourceActions(ctx context.Context, registry actions.Ac
 // (c1-<UTC>-<6 random>) and returns its secret. Temporal Cloud returns a key's
 // secret exactly once, at creation, so a retry could never re-deliver an earlier
 // key anyway; a repeated call is a new credential, and C1 owns the decision to
-// call again. What the handler does guarantee is that it never leaves a key
-// that nobody holds: every failure after the create deletes the key it made.
+// call again. What the handler guarantees is narrower: once CreateApiKey has
+// returned a key id, every later failure deletes the key it made. A create whose
+// response is lost never yields an id, so the handler cannot undo it; that key
+// shows up in the next sync under its owner.
 //
 // # Awaiting the create
 //
