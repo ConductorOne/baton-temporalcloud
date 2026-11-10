@@ -28,43 +28,6 @@ const (
 	// from display-name text.
 	apiKeyCredentialDetail = "temporal_cloud.api_key"
 
-	// apiKeyNamePrefix makes a vended key's provider-side display name a
-	// deterministic function of the C1 request id. Temporal Cloud has no
-	// create-if-absent, so the name is how a retried request recognises the
-	// key its predecessor created instead of minting a second one.
-	apiKeyNamePrefix = "c1-"
-
-	// apiKeyDefaultTTL is the expiry applied when a request carries none.
-	// Temporal Cloud API keys expire, and the connector does not mint
-	// never-expiring credentials, so an absent caller-selected expiry still
-	// produces a bounded key. 90 days is this connector's own default: it is
-	// not a provider bound, and it matches the duration cap C1 applies to a
-	// credential request today, so a default-minted key cannot outlive what a
-	// request could have asked for.
-	apiKeyDefaultTTL = 90 * 24 * time.Hour
-
-	// apiKeyMinTTL bounds a caller-selected expiry from below, so an
-	// already-expired or absurdly short key cannot be requested.
-	//
-	// This floor is the CONNECTOR's, not the provider's. Temporal Cloud
-	// documents no minimum API-key lifetime, so nothing here should be read as
-	// a provider constraint; it exists only to reject a request that would
-	// produce a useless credential.
-	apiKeyMinTTL = 1 * time.Minute
-
-	// apiKeyMaxTTL is the provider's documented maximum API-key expiry.
-	// Verified 2026-10-06 against
-	// https://docs.temporal.io/cloud/api-keys ("The maximum expiration time
-	// for an API key is 2 years") and
-	// https://docs.temporal.io/cloud/manage-access/service-accounts, and
-	// re-verified independently by the dispatching parent the same day.
-	//
-	// The issue that requested this connector asserted a 90-day provider
-	// maximum; the official documentation says otherwise, so the enforced
-	// ceiling follows the documentation. The 90-day figure survives only as
-	// apiKeyDefaultTTL, which is a connector default, not a provider limit.
-	apiKeyMaxTTL = 2 * 365 * 24 * time.Hour
-
 	// apiKeyExpiryReadbackTolerance bounds how much EARLIER than requested the
 	// expiry the provider reports may be before issuance fails. The provider
 	// rounds the instant it stores, so a slightly shorter lifetime is expected.
@@ -76,53 +39,60 @@ const (
 	apiKeyExpiryReadbackTolerance = time.Minute
 
 	// apiKeyReadbackAttempts and apiKeyReadbackInterval bound how long the
-	// post-create read-back retries a NotFound. The create is deliberately not
-	// awaited, so the read can race the provider's own write; treating that race
-	// as a failure would roll back a key the provider just said it created,
-	// destroy a valid credential and spend the request id.
+	// post-create read-back retries a NotFound when the create returned no
+	// async operation to await, so the read can race the provider's own write.
 	apiKeyReadbackAttempts = 4
 	apiKeyReadbackInterval = 500 * time.Millisecond
 
+	// apiKeyCreateMaxDuration bounds the wait for the provider's asynchronous
+	// create of an issued key.
+	apiKeyCreateMaxDuration = 2 * time.Minute
+
 	// apiKeyDeletionMaxDuration bounds the wait for the provider's
-	// asynchronous delete of a vended key.
+	// asynchronous delete of a key.
 	apiKeyDeletionMaxDuration = 10 * time.Minute
 
 	// apiKeyAsyncCheckFallback is used when the provider does not populate an
 	// async operation's check duration, so the wait loop cannot busy-spin.
 	apiKeyAsyncCheckFallback = 2 * time.Second
-
-	// apiKeyMaxListPages bounds the duplicate-issuance lookup so a provider
-	// that ignores page tokens fails closed instead of paging forever. A
-	// single service account may hold at most 20 non-expired keys.
-	apiKeyMaxListPages = 100
 )
 
 var _ connectorbuilder.ResourceSyncerV2 = (*apiKeyBuilder)(nil)
 var _ connectorbuilder.ResourceDeleterV2Limited = (*apiKeyBuilder)(nil)
+var _ connectorbuilder.ResourceActionProvider = (*apiKeyBuilder)(nil)
 
-// apiKeyBuilder syncs Temporal Cloud API keys as secret resources and provides
-// the provider revoke path for credentials this connector mints.
+// apiKeyBuilder syncs one owner kind's Temporal Cloud API keys as secret
+// resources and provides the provider revoke path for them. There is one
+// builder per owner kind (see apiKeyKind), so each secret resource type has
+// exactly one kind of owning identity.
 //
-// The resource type is what makes credential issuance possible at all: the SDK
-// refuses to advertise an issuance descriptor whose secret resource type has no
-// ResourceDeleterV2, and C1 drops a descriptor whose secret resource type the
-// connector does not also declare as a synced resource type.
+// Only the service-account builder registers an issuer; both revoke through the
+// same Delete, because the key id is the provider's handle for either owner.
 type apiKeyBuilder struct {
 	client cloudservicev1.CloudServiceClient
+	kind   apiKeyKind
 }
 
-func newAPIKeyBuilder(client cloudservicev1.CloudServiceClient) *apiKeyBuilder {
-	return &apiKeyBuilder{client: client}
+func newServiceAccountAPIKeyBuilder(client cloudservicev1.CloudServiceClient) *apiKeyBuilder {
+	return &apiKeyBuilder{client: client, kind: serviceAccountAPIKeyKind}
+}
+
+func newUserAPIKeyBuilder(client cloudservicev1.CloudServiceClient) *apiKeyBuilder {
+	return &apiKeyBuilder{client: client, kind: userAPIKeyKind}
 }
 
 func (o *apiKeyBuilder) ResourceType(_ context.Context) *v2.ResourceType {
-	return apiKeyResourceType
+	return o.kind.resourceType
 }
 
 // List returns Temporal Cloud API keys as secret resources. It reads the
 // account-wide key list rather than filtering to one owner: the connector
 // authenticates as an account-wide principal, and a filtered walk would report
 // a successful sync that omits keys C1 then reads as deleted.
+//
+// Each builder keeps only the keys its owner kind owns: the two secret resource
+// types together cover every key the provider reports, and neither reports the
+// other's. A key with no recognised owner kind belongs to neither type.
 //
 // Deleted and expired keys are skipped. They cannot authenticate, and a
 // terminal-state key surfaced as a live resource would keep a dead credential
@@ -135,7 +105,7 @@ func (o *apiKeyBuilder) List(ctx context.Context, parentResourceID *v2.ResourceI
 
 	if bag.Current() == nil {
 		bag.Push(pagination.PageState{
-			ResourceTypeID: apiKeyResourceType.Id,
+			ResourceTypeID: o.kind.resourceType.Id,
 		})
 	}
 
@@ -151,10 +121,10 @@ func (o *apiKeyBuilder) List(ctx context.Context, parentResourceID *v2.ResourceI
 
 	rv := make([]*v2.Resource, 0, len(resp.GetApiKeys()))
 	for _, key := range resp.GetApiKeys() {
-		if apiKeyIsTerminal(key.GetState()) {
+		if apiKeyIsTerminal(key.GetState()) || key.GetSpec().GetOwnerType() != o.kind.ownerType {
 			continue
 		}
-		keyResource, err := protoAPIKeyToResource(key)
+		keyResource, err := protoAPIKeyToResource(key, o.kind)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -252,7 +222,8 @@ func (o *apiKeyBuilder) Delete(ctx context.Context, resourceID *v2.ResourceId, _
 // by an earlier caller -- so the key's own state is the only signal. The wait is
 // bounded by apiKeyDeletionMaxDuration, the same bound a fresh delete's
 // asynchronous operation gets, so a provider that never settles fails the revoke
-// instead of hanging it. NotFound is success: a key the provider no longer lists
+// instead of hanging it. A state other than DELETING (for example DELETE_FAILED)
+// fails the revoke at once. NotFound is success: a key the provider no longer lists
 // is retired for every purpose a revoke cares about.
 func (o *apiKeyBuilder) awaitAPIKeyRetired(ctx context.Context, keyID string) error {
 	waitCtx, cancel := context.WithTimeout(ctx, apiKeyDeletionMaxDuration)
@@ -266,8 +237,16 @@ func (o *apiKeyBuilder) awaitAPIKeyRetired(ctx context.Context, keyID string) er
 			}
 			return fmt.Errorf("baton-temporalcloud: failed to read API key %q while waiting for its delete: %w", keyID, err)
 		}
-		if apiKeyIsAlreadyGone(key.GetApiKey().GetState()) {
+		state := key.GetApiKey().GetState()
+		if apiKeyIsAlreadyGone(state) {
 			return nil
+		}
+		if state != resourcev1.ResourceState_RESOURCE_STATE_DELETING {
+			// The earlier delete did not finish: the provider reports the key
+			// as DELETE_FAILED, or has returned it to a live state. It can
+			// still authenticate, so this revoke has not happened. Polling
+			// would only delay the same answer by apiKeyDeletionMaxDuration.
+			return fmt.Errorf("baton-temporalcloud: API key %q is %s, not deleting: the provider's earlier delete did not complete, retry the revoke", keyID, state)
 		}
 
 		select {
@@ -288,7 +267,7 @@ func (o *apiKeyBuilder) awaitAPIKeyRetired(ctx context.Context, keyID string) er
 // reports who created a key, and this connector authenticates as its own
 // configured principal rather than as the recipient, so recording the owner as
 // creator would assert a fact the provider never reported.
-func protoAPIKeyToResource(key *identityv1.ApiKey) (*v2.Resource, error) {
+func protoAPIKeyToResource(key *identityv1.ApiKey, kind apiKeyKind) (*v2.Resource, error) {
 	if key.GetId() == "" {
 		return nil, fmt.Errorf("baton-temporalcloud: API key is missing an id")
 	}
@@ -304,7 +283,7 @@ func protoAPIKeyToResource(key *identityv1.ApiKey) (*v2.Resource, error) {
 	}
 	var resourceOpts []rs.ResourceOption
 
-	if owner := apiKeyOwnerResourceID(key.GetSpec()); owner != nil {
+	if owner := apiKeyOwnerResourceID(key.GetSpec(), kind); owner != nil {
 		traitOpts = append(traitOpts, rs.WithSecretIdentityID(owner))
 		// The owner is the resource's parent so the delete path can see the
 		// key's provider hierarchy, matching how the issued resource is built.
@@ -317,25 +296,18 @@ func protoAPIKeyToResource(key *identityv1.ApiKey) (*v2.Resource, error) {
 		resourceOpts = append(resourceOpts, rs.WithResourceCreatedAt(created.AsTime()))
 	}
 
-	return rs.NewSecretResource(name, apiKeyResourceType, key.GetId(), traitOpts, resourceOpts...)
+	return rs.NewSecretResource(name, kind.resourceType, key.GetId(), traitOpts, resourceOpts...)
 }
 
 // apiKeyOwnerResourceID maps a key's owner onto the connector resource that
-// represents it. An unrecognised or absent owner yields nil rather than a
-// guess: a credential attributed to the wrong identity is worse than one with
-// no identity stamped on it.
-func apiKeyOwnerResourceID(spec *identityv1.ApiKeySpec) *v2.ResourceId {
-	if spec.GetOwnerId() == "" {
+// represents it. An owner of any other kind yields nil rather than a guess: a
+// credential attributed to the wrong identity is worse than one with no
+// identity stamped on it.
+func apiKeyOwnerResourceID(spec *identityv1.ApiKeySpec, kind apiKeyKind) *v2.ResourceId {
+	if spec.GetOwnerId() == "" || spec.GetOwnerType() != kind.ownerType {
 		return nil
 	}
-	switch spec.GetOwnerType() {
-	case identityv1.OwnerType_OWNER_TYPE_SERVICE_ACCOUNT:
-		return &v2.ResourceId{ResourceType: serviceAccountResourceType.Id, Resource: spec.GetOwnerId()}
-	case identityv1.OwnerType_OWNER_TYPE_USER:
-		return &v2.ResourceId{ResourceType: userResourceType.Id, Resource: spec.GetOwnerId()}
-	default:
-		return nil
-	}
+	return &v2.ResourceId{ResourceType: kind.ownerResourceType.Id, Resource: spec.GetOwnerId()}
 }
 
 // apiKeyIsTerminal reports whether a provider key state means the key can no
