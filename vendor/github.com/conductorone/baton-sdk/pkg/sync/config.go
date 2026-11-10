@@ -24,6 +24,10 @@ import (
 // resumes across process boundaries: mutable run state has to survive in
 // the store, config only has to be passed again.
 type syncConfig struct {
+	retainLedgerTokens                  bool
+	restartLimitPerAction               uint64
+	restartLimitPerSync                 uint64
+	ledgerDebug                         bool
 	c1zPath                             string
 	externalResourceC1ZPath             string
 	externalResourceEntitlementIdFilter string
@@ -64,7 +68,7 @@ type syncConfig struct {
 	skipEntitlementsAndGrants bool
 	skipGrants                bool
 	syncType                  connectorstore.SyncType
-	setSessionStore           sessions.SetSessionStore
+	sessionStoreBinder        sessions.SessionStoreBinder
 	syncResourceTypes         []string
 	workerCount               int // If 1, sync is sequential (default). If > 1, sync operations are done in parallel.
 	metricsHandler            metrics.Handler

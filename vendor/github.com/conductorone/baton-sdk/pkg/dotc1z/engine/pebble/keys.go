@@ -203,6 +203,15 @@ func encodeGrantPrimaryEntitlementPrefix(id entitlementIdentity) []byte {
 	return codec.AppendTupleSeparator(buf)
 }
 
+// encodeGrantPrimaryEntitlementPrincipalTypePrefix extends
+// encodeGrantPrimaryEntitlementPrefix with one principal resource type,
+// scoping the primary keyspace to that entitlement's grants of that type.
+func encodeGrantPrimaryEntitlementPrincipalTypePrefix(id entitlementIdentity, principalRT string) []byte {
+	buf := encodeGrantPrimaryEntitlementPrefix(id)
+	buf = codec.AppendTupleString(buf, principalRT)
+	return codec.AppendTupleSeparator(buf)
+}
+
 func encodeGrantPrimaryEntitlementResourcePrefix(resourceTypeID, resourceID string) []byte {
 	buf := make([]byte, 0, 64)
 	buf = append(buf, versionV3, typeGrant)
@@ -456,6 +465,16 @@ func encodeResourceKey(resourceTypeID, resourceID string) []byte {
 // encodeResourcePrefix is the by-type prefix for resources.
 func encodeResourcePrefix() []byte {
 	return []byte{versionV3, typeResource}
+}
+
+// encodeResourcePrimaryTypePrefix is the primary-key prefix of every
+// resource of one type.
+func encodeResourcePrimaryTypePrefix(resourceTypeID string) []byte {
+	buf := make([]byte, 0, 8+len(resourceTypeID))
+	buf = append(buf, versionV3, typeResource)
+	buf = codec.AppendTupleSeparator(buf)
+	buf = codec.AppendTupleString(buf, resourceTypeID)
+	return codec.AppendTupleSeparator(buf)
 }
 
 // encodeResourceByParentPrefix is the by-value prefix for "all

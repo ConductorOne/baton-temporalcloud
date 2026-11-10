@@ -293,15 +293,21 @@ func SourceCacheFamilyBounds() ([]byte, []byte) {
 //	0x02  counter buckets  (LedgerCounterPrefix; tuple(run) | sep | worker → LedgerCounterBucket;
 //	                        worker 0xFFFFFFFF is the run's reserved run-level stats bucket)
 //	0x03  frontier         (LedgerFrontierKey; single key → LedgerFrontier)
+//	0x04  pending work     (ordered work IDs)
+//	0x05  work state       (format and allocator)
+//	0x06  scheduling       (child-resource relations)
 //
 // All ride the RecordBatch and are wiped with the sync (scopedRanges
 // covers the family). Row readers bound themselves to 0x00
 // (LedgerRowBounds); the family-wide bound is for wipe and purge.
 const (
-	ledgerKindRow      byte = 0x00
-	ledgerKindFact     byte = 0x01
-	ledgerKindCounter  byte = 0x02
-	ledgerKindFrontier byte = 0x03
+	ledgerKindRow        byte = 0x00
+	ledgerKindFact       byte = 0x01
+	ledgerKindCounter    byte = 0x02
+	ledgerKindFrontier   byte = 0x03
+	ledgerKindPending    byte = 0x04
+	ledgerKindWorkState  byte = 0x05
+	ledgerKindScheduling byte = 0x06
 )
 
 func LedgerKeyPrefix() []byte {
@@ -561,6 +567,14 @@ func DeferredIdxPendingKey() []byte {
 	return codec.AppendTupleStrings(buf, "deferred_grant_idx_pending")
 }
 
+// DeferredNeedsExpansionPendingKey marks trusted grant writes whose
+// by_needs_expansion entries require a seal-time rebuild.
+func DeferredNeedsExpansionPendingKey() []byte {
+	buf := make([]byte, 0, 2+len("deferred_grant_needs_expansion_pending"))
+	buf = append(buf, VersionV3, TypeEngineMeta)
+	return codec.AppendTupleStrings(buf, "deferred_grant_needs_expansion_pending")
+}
+
 // GrantDigestABIStampKey is the durable record of which grant-digest
 // hash ABI (the engine's GrantDigestABIVersion) this file's digest
 // state — hash-index values and digest nodes — was computed under.
@@ -591,4 +605,21 @@ func GrantDigestABIStampKey() []byte {
 // invalidation and repair delegation, which are about nodes.
 func DigestNodeKeyspaceBounds() ([]byte, []byte) {
 	return []byte{VersionV3, TypeDigest}, []byte{VersionV3, TypeDigest, DigestMetaIndexID}
+}
+
+func LedgerPendingPrefix() []byte {
+	return []byte{VersionV3, TypeLedger, ledgerKindPending}
+}
+
+func LedgerPendingBounds() ([]byte, []byte) {
+	lo := LedgerPendingPrefix()
+	return lo, UpperBound(lo)
+}
+
+func LedgerWorkStateKey() []byte {
+	return []byte{VersionV3, TypeLedger, ledgerKindWorkState}
+}
+
+func LedgerSchedulingPrefix() []byte {
+	return []byte{VersionV3, TypeLedger, ledgerKindScheduling}
 }

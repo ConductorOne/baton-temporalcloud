@@ -13,7 +13,6 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/sdk"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
-	"golang.org/x/net/http2"
 )
 
 // staleConnectionGap is how long the transport can go unused before its
@@ -163,16 +162,15 @@ func (t *Transport) make(_ context.Context) (http.RoundTripper, error) {
 		ExpectContinueTimeout: 1 * time.Second,
 		ResponseHeaderTimeout: 60 * time.Second,
 		TLSClientConfig:       t.tlsClientConfig,
+		// PING-frame keepalive: keeps streams alive across intermediaries
+		// (e.g. NLB) that RST idle tunnels. TCP keepalive doesn't cover
+		// sockets with an outstanding write — the state during a slow
+		// response.
+		HTTP2: &http.HTTP2Config{
+			SendPingTimeout: 15 * time.Second,
+			PingTimeout:     15 * time.Second,
+		},
 	}
-	// PING-frame keepalive: keeps streams alive across intermediaries (e.g.
-	// NLB) that RST idle tunnels. TCP keepalive doesn't cover sockets with
-	// an outstanding write — the state during a slow response.
-	h2, err := http2.ConfigureTransports(baseTransport)
-	if err != nil {
-		return nil, err
-	}
-	h2.ReadIdleTimeout = 15 * time.Second
-	h2.PingTimeout = 15 * time.Second
 	var rv http.RoundTripper = baseTransport
 	rv = &userAgentTripper{next: rv, userAgent: t.userAgent}
 	t.baseTransport = baseTransport
@@ -279,7 +277,6 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 					zap.String("http.method", req.Method),
 					zap.String("http.url_details.host", req.URL.Host),
 					zap.String("http.url_details.path", req.URL.Path),
-					zap.String("http.url_details.query", req.URL.RawQuery),
 					zap.Duration("duration", duration),
 					zap.Any("panic", r),
 				)
@@ -313,14 +310,15 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 			resp, err = rt.RoundTrip(retryReq)
 		}
 	}
-	err = wrapTransientNetworkError(err)
+	if err != nil {
+		err = classifyTransportFailure(err, requestEndpoint(req))
+	}
 	if t.log {
 		duration := time.Since(start)
 		fields := []zap.Field{
 			zap.String("http.method", req.Method),
 			zap.String("http.url_details.host", req.URL.Host),
 			zap.String("http.url_details.path", req.URL.Path),
-			zap.String("http.url_details.query", req.URL.RawQuery),
 			zap.Duration("duration", duration),
 		}
 

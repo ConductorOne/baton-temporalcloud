@@ -18,10 +18,10 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/dotc1z/c1zstore"
 	formatv3 "github.com/conductorone/baton-sdk/pkg/dotc1z/format/v3"
-	"github.com/conductorone/baton-sdk/pkg/session"
 	sdkSync "github.com/conductorone/baton-sdk/pkg/sync"
 	"github.com/conductorone/baton-sdk/pkg/tasks"
 	"github.com/conductorone/baton-sdk/pkg/types"
+	"github.com/conductorone/baton-sdk/pkg/types/sessions"
 	"github.com/conductorone/baton-sdk/pkg/uotel"
 )
 
@@ -36,12 +36,16 @@ type fullSyncHelpers interface {
 // classifySyncError applies the task-manager retry policy to a failed
 // sync's error. Ingestion-invariant DATA VERDICTS are deterministic on
 // the connector's dataset: retrying re-fails identically, so they are
-// marked non-retryable. The pass's IO failures don't carry the sentinel
-// and stay retryable. Kept as a standalone function so the mapping is
-// testable at this layer (the manager consumes ErrTaskNonRetryable via
-// errors.Is when finishing the task).
+// marked non-retryable. An action whose page token expired past its
+// restart limit re-fails the same way on every resume, so it is
+// non-retryable too. The pass's IO failures carry neither sentinel and
+// stay retryable. Kept
+// as a standalone function so the mapping is testable at this layer (the
+// manager consumes ErrTaskNonRetryable via errors.Is when finishing the
+// task).
 func classifySyncError(err error) error {
-	if errors.Is(err, sdkSync.ErrIngestInvariantViolated) {
+	if errors.Is(err, sdkSync.ErrIngestInvariantViolated) ||
+		errors.Is(err, sdkSync.ErrRestartLimitExceeded) {
 		err = errors.Join(err, ErrTaskNonRetryable)
 	}
 	return err
@@ -250,8 +254,8 @@ func (c *fullSyncTaskHandler) sync(ctx context.Context, c1zPath string) error {
 		syncOpts = append(syncOpts, sdkSync.WithSyncResourceTypes(syncResourceTypeIDs))
 	}
 
-	if setSessionStore, ok := cc.(session.SetSessionStore); ok {
-		syncOpts = append(syncOpts, sdkSync.WithSessionStore(setSessionStore))
+	if binder, ok := cc.(sessions.SessionStoreBinder); ok {
+		syncOpts = append(syncOpts, sdkSync.WithSessionStoreBinder(binder))
 	}
 
 	syncer, err := sdkSync.NewSyncer(ctx, c.helpers.ConnectorClient(), syncOpts...)

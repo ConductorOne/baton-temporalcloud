@@ -11,6 +11,7 @@ import (
 
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // ActionOp represents a sync operation.
@@ -41,6 +42,8 @@ func (s ActionOp) String() string {
 		return "targeted-resource-sync"
 	case SyncStaticEntitlementsOp:
 		return "list-static-entitlements"
+	case MaterializeStaticEntitlementsOp:
+		return "materialize-static-entitlements"
 	default:
 		return "unknown"
 	}
@@ -86,6 +89,8 @@ func newActionOp(str string) ActionOp {
 		return SyncTargetedResourceOp
 	case SyncStaticEntitlementsOp.String():
 		return SyncStaticEntitlementsOp
+	case MaterializeStaticEntitlementsOp.String():
+		return MaterializeStaticEntitlementsOp
 	case ListResourcesForEntitlementsOp.String():
 		return ListResourcesForEntitlementsOp
 	default:
@@ -108,10 +113,14 @@ const (
 	SyncGrantExpansionOp
 	SyncTargetedResourceOp
 	SyncStaticEntitlementsOp
+	MaterializeStaticEntitlementsOp
 )
 
 // Action stores the current operation, page token, and optional fields for which resource is being worked with.
 type Action struct {
+	WorkPageToken        string   `json:"-"`
+	WorkID               uint64   `json:"-"`
+	WorkRevision         uint64   `json:"-"`
 	ID                   string   `json:"id,omitempty"`
 	Op                   ActionOp `json:"operation,omitempty"`
 	PageToken            string   `json:"page_token,omitempty"`
@@ -134,11 +143,28 @@ type Action struct {
 	TypeScopedPlanned bool `json:"type_scoped_planned,omitempty"`
 }
 
+func (a Action) MarshalLogObject(enc zapcore.ObjectEncoder) error {
+	enc.AddString("id", a.ID)
+	enc.AddString("operation", a.Op.String())
+	enc.AddString("resource_type_id", a.ResourceTypeID)
+	enc.AddString("resource_id", a.ResourceID)
+	enc.AddString("parent_resource_type_id", a.ParentResourceTypeID)
+	enc.AddString("parent_resource_id", a.ParentResourceID)
+	enc.AddBool("spawned", a.Spawned)
+	enc.AddBool("type_scoped", a.TypeScoped)
+	enc.AddBool("type_scoped_planned", a.TypeScopedPlanned)
+	return nil
+}
+
 // ActionCount is the per-op tally runState keeps and the token carries: how
 // many actions of one op finished, and how many of those ended in a warning.
 type ActionCount struct {
 	CompletedCount uint64 `json:"completed_count,omitempty"`
 	WarningCount   uint64 `json:"warning_count,omitempty"`
+	// Restart pages committed for this op after the connector invalidated
+	// a page token. Not completions. Not on the token: restored from the
+	// ledger's counters on resume, and always zero on the legacy path.
+	RestartCount uint64 `json:"-"`
 }
 
 func makeActionID(id uint64) string {
@@ -382,6 +408,16 @@ func (r *runState) transitionAction(
 	nextPageToken string,
 	childActions []Action,
 ) ([]*Action, error) {
+	return r.transitionActionWithCompletion(ctx, parent, nextPageToken, childActions, true)
+}
+
+func (r *runState) transitionActionWithCompletion(
+	ctx context.Context,
+	parent *Action,
+	nextPageToken string,
+	childActions []Action,
+	recordCompletion bool,
+) ([]*Action, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if parent == nil {
@@ -436,7 +472,7 @@ func (r *runState) transitionAction(
 		return pushed, nil
 	}
 
-	r.finishActionLocked(ctx, parent, false)
+	r.finishActionLocked(ctx, parent, false, recordCompletion)
 	return pushed, nil
 }
 
@@ -444,7 +480,7 @@ func (r *runState) transitionAction(
 func (r *runState) finishAction(ctx context.Context, action *Action) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.finishActionLocked(ctx, action, false)
+	r.finishActionLocked(ctx, action, false, true)
 }
 
 // finishActionWithWarning finishes an action that ended in a warning, which
@@ -452,11 +488,11 @@ func (r *runState) finishAction(ctx context.Context, action *Action) {
 func (r *runState) finishActionWithWarning(ctx context.Context, action *Action) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.finishActionLocked(ctx, action, true)
+	r.finishActionLocked(ctx, action, true, true)
 }
 
 // finishActionLocked requires mu to be held.
-func (r *runState) finishActionLocked(ctx context.Context, action *Action, isWarning bool) {
+func (r *runState) finishActionLocked(ctx context.Context, action *Action, isWarning, recordCompletion bool) {
 	if action == nil {
 		panic("action cannot be nil")
 	}
@@ -472,13 +508,15 @@ func (r *runState) finishActionLocked(ctx context.Context, action *Action, isWar
 	r.actionOrder = slices.Delete(r.actionOrder, index, index+1)
 	delete(r.actions, action.ID)
 	delete(r.spawnedInFlight, action.ID)
-	r.completedActions++
-	actionCount := r.actionCounts[action.Op.String()]
-	actionCount.CompletedCount++
-	if isWarning {
-		actionCount.WarningCount++
+	if recordCompletion {
+		r.completedActions++
+		actionCount := r.actionCounts[action.Op.String()]
+		actionCount.CompletedCount++
+		if isWarning {
+			actionCount.WarningCount++
+		}
+		r.actionCounts[action.Op.String()] = actionCount
 	}
-	r.actionCounts[action.Op.String()] = actionCount
 	ctxzap.Extract(ctx).Debug("finishing action", zap.Any("action", action))
 }
 
@@ -512,4 +550,28 @@ func (r *runState) getActionCount(op ActionOp) ActionCount {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.actionCounts[op.String()]
+}
+
+func (r *runState) recordRestart(op ActionOp) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := r.actionCounts[op.String()]
+	count.RestartCount++
+	r.actionCounts[op.String()] = count
+}
+
+// restartCounts returns the per-op restart tally and its total.
+func (r *runState) restartCounts() (map[string]uint64, uint64) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var total uint64
+	byOp := make(map[string]uint64)
+	for op, count := range r.actionCounts {
+		if count.RestartCount == 0 {
+			continue
+		}
+		byOp[op] = count.RestartCount
+		total += count.RestartCount
+	}
+	return byOp, total
 }

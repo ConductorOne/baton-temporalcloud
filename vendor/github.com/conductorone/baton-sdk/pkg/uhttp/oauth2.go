@@ -64,7 +64,7 @@ func ClassifyOAuth2TokenError(err error) error {
 		return classified
 	}
 
-	return wrapTransientNetworkError(err)
+	return classifyTransportFailure(err, "")
 }
 
 // NewClassifyingTokenSource returns a TokenSource that runs every error from
@@ -95,7 +95,7 @@ func (c *classifyingTokenSource) Token() (*oauth2.Token, error) {
 
 // classifyOAuth2RetrieveError maps a token endpoint's rejection to a grpc
 // code. It is reached from ClassifyOAuth2TokenError, which x/oauth2's token
-// sources feed, and from wrapTransientNetworkError, for the callers that
+// sources feed, and from classifyTransportFailure, for the callers that
 // drive a token endpoint through this package's transport directly.
 func classifyOAuth2RetrieveError(retrieveErr *oauth2.RetrieveError, err error) error {
 	tokenErr := oauth2TokenErrorFrom(retrieveErr)
@@ -330,7 +330,9 @@ func buildFlattenedTokenFailures() []flattenedTokenFailure {
 	failures := []flattenedTokenFailure{
 		{substr: "no such host", code: codes.InvalidArgument, msg: "dns lookup failed: NXDOMAIN"},
 		{substr: "server misbehaving", code: codes.Unavailable, msg: "temporary dns lookup failure"},
+		{substr: "tls: failed to verify certificate", code: codes.FailedPrecondition, msg: "tls certificate verification failed"},
 		{substr: "context deadline exceeded", code: codes.DeadlineExceeded, msg: "request timeout"},
+		{substr: "context canceled", code: codes.Canceled, msg: "request canceled"},
 		{substr: "Client.Timeout exceeded", code: codes.DeadlineExceeded, msg: "request timeout"},
 		{substr: "TLS handshake timeout", code: codes.DeadlineExceeded, msg: "request timeout"},
 		{substr: "i/o timeout", code: codes.DeadlineExceeded, msg: "request timeout"},

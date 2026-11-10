@@ -22,12 +22,11 @@ import (
 	v3 "github.com/conductorone/baton-sdk/pb/c1/storage/v3"
 	"github.com/conductorone/baton-sdk/pkg/connectorstore"
 	"github.com/conductorone/baton-sdk/pkg/dotc1z/c1zstore"
-	"github.com/conductorone/baton-sdk/pkg/dotc1z/engine/pebble/internal/rawdb"
 	"github.com/conductorone/baton-sdk/pkg/sourcecache"
 )
 
 // This file is the Engine's connectorstore face: the sync lifecycle
-// (StartNewSync/ResumeSync/CheckpointSync/EndSync) and the v2
+// (StartNewSync/ResumeSync/EndSync) and the v2
 // writer/reader surface C1 + the syncer call. It translates v2 wire
 // types ↔ v3 record types via translate_v2.go and routes Put/Get/List
 // into the per-record-type methods. Historically this was a separate
@@ -107,9 +106,15 @@ func (e *Engine) startNewSync(ctx context.Context, syncType connectorstore.SyncT
 	// MarkFreshSync skip-Get fast path depends on. A fresh engine
 	// (the common ToPebble/compaction case) has no sync-run and skips
 	// the wipe.
-	if existed, err := e.hasSyncRun(); err != nil {
+	if existed, err := e.syncRuns.hasSyncRun(); err != nil {
 		return "", err
 	} else if existed {
+		if _, phase, err := e.ledger.workState(); err != nil {
+			return "", err
+		} else if phase != c1zstore.LedgerQueueAbsent {
+			ctxzap.Extract(ctx).Warn("pebble: starting a new sync over an open pass; its progress is discarded",
+				zap.Stringer("abandoned_phase", phase))
+		}
 		if err := e.ResetForNewSync(ctx); err != nil {
 			return "", err
 		}
@@ -123,7 +128,7 @@ func (e *Engine) startNewSync(ctx context.Context, syncType connectorstore.SyncT
 		ParentSyncId: parentSyncID,
 		StartedAt:    timestamppb.New(time.Now()),
 	}.Build()
-	if err := e.PutSyncRunRecord(ctx, rec); err != nil {
+	if err := e.syncRuns.PutSyncRunRecord(ctx, rec); err != nil {
 		e.clearCurrentSync()
 		return "", err
 	}
@@ -141,7 +146,7 @@ func (e *Engine) ResumeSync(ctx context.Context, syncType connectorstore.SyncTyp
 	if syncID == "" {
 		return "", errors.New("pebble.ResumeSync: empty syncID")
 	}
-	if _, err := e.GetSyncRunRecord(ctx, syncID); err != nil {
+	if _, err := e.syncRuns.GetSyncRunRecord(ctx, syncID); err != nil {
 		return "", c1zstore.AdaptNotFound(fmt.Errorf("ResumeSync: lookup: %w", err), pebble.ErrNotFound)
 	}
 	e.lifecycleMu.Lock()
@@ -172,11 +177,11 @@ func (e *Engine) ResumeSync(ctx context.Context, syncType connectorstore.SyncTyp
 // Only when nothing is resumable do we start a new sync.
 func (e *Engine) StartOrResumeSync(ctx context.Context, syncType connectorstore.SyncType, syncID string) (string, bool, error) {
 	if syncID != "" {
-		if _, err := e.GetSyncRunRecord(ctx, syncID); err == nil {
+		if _, err := e.syncRuns.GetSyncRunRecord(ctx, syncID); err == nil {
 			id, err := e.ResumeSync(ctx, syncType, syncID)
 			return id, false, err
 		}
-	} else if rec, err := e.LatestUnfinishedSyncRecord(ctx, syncTypeFilterFromConnectorstore(syncType)); err != nil {
+	} else if rec, err := e.syncRuns.LatestUnfinishedSyncRecord(ctx, syncTypeFilterFromConnectorstore(syncType)); err != nil {
 		return "", false, err
 	} else if rec != nil {
 		id, err := e.ResumeSync(ctx, syncType, rec.GetSyncId())
@@ -196,7 +201,7 @@ func (e *Engine) StartOrResumeSync(ctx context.Context, syncType connectorstore.
 func (e *Engine) SetCurrentSync(ctx context.Context, syncID string) error {
 	e.lifecycleMu.Lock()
 	defer e.lifecycleMu.Unlock()
-	if _, err := e.GetSyncRunRecord(ctx, syncID); err != nil && !errors.Is(err, pebble.ErrNotFound) {
+	if _, err := e.syncRuns.GetSyncRunRecord(ctx, syncID); err != nil && !errors.Is(err, pebble.ErrNotFound) {
 		return err
 	}
 	return e.bindCurrentSync(syncID)
@@ -221,7 +226,7 @@ func (e *Engine) CurrentSyncStep(ctx context.Context) (string, error) {
 	if syncID == "" {
 		return "", nil
 	}
-	rec, err := e.GetSyncRunRecord(ctx, syncID)
+	rec, err := e.syncRuns.GetSyncRunRecord(ctx, syncID)
 	if err != nil {
 		if errors.Is(err, pebble.ErrNotFound) {
 			return "", nil
@@ -229,34 +234,6 @@ func (e *Engine) CurrentSyncStep(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return rec.GetSyncToken(), nil
-}
-
-// A token beside a ledger would be a second, lagging authority.
-var ErrLedgeredSyncWritesNoToken = errors.New("CheckpointSync: sync has a ledger; ledgered syncs write no token")
-
-func (e *Engine) CheckpointSync(ctx context.Context, syncToken string) error {
-	e.lifecycleMu.Lock()
-	defer e.lifecycleMu.Unlock()
-	syncID := e.CurrentSyncID()
-	if syncID == "" {
-		return errors.New("CheckpointSync: no open sync")
-	}
-	ledgered, err := e.ledger.active()
-	if err != nil {
-		return err
-	}
-	if ledgered {
-		return ErrLedgeredSyncWritesNoToken
-	}
-	existing, err := e.GetSyncRunRecord(ctx, syncID)
-	if err != nil {
-		return err
-	}
-	// Clone-and-mutate so lifecycle updates preserve every metadata field,
-	// including fields introduced after this code was written.
-	updated := proto.Clone(existing).(*v3.SyncRunRecord)
-	updated.SetSyncToken(syncToken)
-	return e.PutSyncRunRecord(ctx, updated)
 }
 
 // EndSync stamps the open sync_run's ended_at and detaches it. After
@@ -272,8 +249,7 @@ func (e *Engine) EndSyncWithStats(ctx context.Context, stats c1zstore.SyncStats)
 	return e.endSync(ctx, syncStatsOverlay(stats))
 }
 
-// A ledgered sync writes no token, so only the caller can supply its stats;
-// sealing without them would drop ingest quality, a replay-eligibility input.
+// Deprecated: EndSync accepts ledgered runs and preserves their recovery state.
 var ErrLedgeredSyncNeedsStats = errors.New("EndSync: ledgered sync must seal through EndSyncWithStats")
 
 func (e *Engine) endSync(ctx context.Context, overlay *v3.SyncStatsRecord) error {
@@ -283,21 +259,33 @@ func (e *Engine) endSync(ctx context.Context, overlay *v3.SyncStatsRecord) error
 	if syncID == "" {
 		return errors.New("EndSync: no open sync")
 	}
-	if overlay == nil {
-		ledgered, err := e.ledger.active()
-		if err != nil {
-			return err
-		}
-		if ledgered {
-			return ErrLedgeredSyncNeedsStats
-		}
-	}
-	existing, err := e.GetSyncRunRecord(ctx, syncID)
+	ledgered, err := e.ledger.active()
 	if err != nil {
 		return err
 	}
+	preserveRecovery := overlay == nil
+	existing, err := e.syncRuns.GetSyncRunRecord(ctx, syncID)
+	if err != nil {
+		return err
+	}
+	if !preserveRecovery && ledgered {
+		// The terminal page moved the declaration to sealing with the queue
+		// empty; a finished sync with no declaration is an engine-level reseal.
+		_, phase, err := e.ledger.PendingWork(ctx, 0, 1)
+		if err != nil {
+			return err
+		}
+		switch {
+		case phase == c1zstore.LedgerQueueSealing:
+		case phase == c1zstore.LedgerQueueAbsent && existing.GetEndedAt() != nil:
+		case phase == c1zstore.LedgerQueueAbsent:
+			return errors.New("EndSync: missing pending-work declaration")
+		default:
+			return fmt.Errorf("EndSync: pending-work declaration is %s, not sealing", phase)
+		}
+	}
 	if overlay != nil {
-		e.setSyncStatsOverlay(syncID, overlay)
+		e.syncRuns.setSyncStatsOverlay(syncID, overlay)
 	}
 	// The sync's writes are done. From here to save/close the store only
 	// runs the deferred index build, the stats sidecar, and the durability
@@ -315,7 +303,7 @@ func (e *Engine) endSync(ctx context.Context, overlay *v3.SyncStatsRecord) error
 	// on AllowSealed paths; sync-run metadata stamps remain allowed.
 	// Sealing also pauses compactions for the EndSync-to-close window.
 	e.seal()
-	if err := e.endSyncFinalize(ctx, existing); err != nil {
+	if err := e.endSyncFinalize(ctx, existing, preserveRecovery); err != nil {
 		// On failure the sync stays bound and the caller may keep writing
 		// (or retry EndSync later): leave the sealed state and resume
 		// compactions, or L0 would accumulate until pebble stalls writes at
@@ -323,19 +311,21 @@ func (e *Engine) endSync(ctx context.Context, overlay *v3.SyncStatsRecord) error
 		e.unseal()
 		// finalize can fail before PersistSyncStats consumes the stash; left behind,
 		// it would apply to whatever seals this id next.
-		if overlay != nil {
-			e.takeSyncStatsOverlay(syncID)
-		}
+		e.syncRuns.takeSyncStatsOverlay(syncID)
 		return err
 	}
 	return nil
 }
 
-// endSyncFinalize runs the sealed tail of EndSync: the deferred index
-// build, the ended_at stamp, the stats sidecar, and the durability flush.
-// Runs with the engine SEALED (see EndSync) — every write below goes
-// through an AllowSealed path. Split out so EndSync can unseal on failure.
-func (e *Engine) endSyncFinalize(ctx context.Context, existing *v3.SyncRunRecord) error {
+// Requires a sealed engine; EndSync unseals it if finalization fails.
+func (e *Engine) endSyncFinalize(ctx context.Context, existing *v3.SyncRunRecord, preserveRecovery bool) error {
+	if preserveRecovery {
+		if err := e.restoreEndSyncStats(ctx, existing.GetSyncId()); err != nil {
+			return err
+		}
+	}
+	cost := &SealCost{}
+	defer func() { e.test.sealCost.Store(cost) }()
 	// Build the deferred by_principal index BEFORE stamping ended_at (an
 	// interrupted build must leave the sync visibly unfinished so a resume
 	// re-runs EndSync and the rebuild — the pending marker is durable, see
@@ -366,7 +356,7 @@ func (e *Engine) endSyncFinalize(ctx context.Context, existing *v3.SyncRunRecord
 		// rescanning every grant in the file again. Build failures are
 		// downgraded to a loud digest-state drop inside; an error
 		// surfacing here (cancellation, drop failure) is fatal.
-		if err := e.RepairMissingGrantDigests(ctx); err != nil {
+		if err := e.digests.RepairMissingGrantDigests(ctx); err != nil {
 			return fmt.Errorf("EndSync: repair grant digests: %w", err)
 		}
 	}
@@ -383,36 +373,100 @@ func (e *Engine) endSyncFinalize(ctx context.Context, existing *v3.SyncRunRecord
 	// ledger-free sync never writes the fact, and the purge's compaction
 	// overlaps SSTs even on a ledger-free file (BenchmarkLedgerSealCost,
 	// pages=0).
-	ledgered, err := e.ledger.active()
-	if err != nil {
-		return fmt.Errorf("EndSync: check ledger presence: %w", err)
-	}
-	if ledgered {
-		scrub, err := e.ledger.sealScrubsTokens()
+	var archiveValue []byte
+	retained := false
+	if !preserveRecovery {
+		ledgered, err := e.ledger.active()
 		if err != nil {
-			return fmt.Errorf("EndSync: read retain-tokens fact: %w", err)
+			return fmt.Errorf("EndSync: check ledger presence: %w", err)
 		}
-		if scrub {
-			if err := e.ledger.scrubTokens(ctx); err != nil {
-				return fmt.Errorf("EndSync: scrub ledger tokens: %w", err)
+		needsPurge := false
+		if ledgered {
+			discard, err := e.ledger.sealDiscardsRows()
+			if err != nil {
+				return fmt.Errorf("EndSync: read ledger disposal policy: %w", err)
 			}
-			if !e.test.skipLedgerResiduePurge {
-				if err := e.ledger.purgeResidue(ctx); err != nil {
-					return fmt.Errorf("EndSync: purge ledger residue after scrub: %w", err)
+			retained = !discard
+			archiveStarted := time.Now()
+			archiveErr := e.withWriteAllowSealed(func() error {
+				var err error
+				archiveValue, _, err = e.buildLedgerArchiveLocked(ctx, existing.GetSyncId())
+				return err
+			})
+			cost.LedgerArchive = time.Since(archiveStarted)
+			if archiveErr != nil {
+				return fmt.Errorf("EndSync: build ledger archive: %w", archiveErr)
+			}
+			if discard {
+				// The archive rides this batch too: a crash before the stamp
+				// leaves no rows to regenerate the report from.
+				discardStarted := time.Now()
+				if err := e.ledger.markResiduePending(); err != nil {
+					return err
+				}
+				if err := e.withWriteAllowSealed(func() error {
+					batch := e.db.NewRecordBatch()
+					defer batch.Close()
+					if err := batch.StageLedgerArchive(ledgerArchiveKey(), archiveValue); err != nil {
+						return err
+					}
+					if err := batch.StageLedgerDisposeTokens(); err != nil {
+						return err
+					}
+					return batch.Commit(pebble.Sync)
+				}); err != nil {
+					return err
+				}
+				cost.LedgerDiscard = time.Since(discardStarted)
+				if hook := e.test.ledgerArchiveHook; hook != nil {
+					if err := hook("after-delete"); err != nil {
+						return err
+					}
+				}
+				needsPurge = true
+			} else {
+				scrub, err := e.ledger.sealScrubsTokens()
+				if err != nil {
+					return fmt.Errorf("EndSync: read retain-tokens fact: %w", err)
+				}
+				if scrub {
+					started := time.Now()
+					err := e.ledger.scrubTokens(ctx)
+					cost.LedgerScrub = time.Since(started)
+					if err != nil {
+						return fmt.Errorf("EndSync: scrub ledger tokens: %w", err)
+					}
+					needsPurge = true
 				}
 			}
 		}
-	}
-	// Not gated on the ledger's presence: this is the residue of a ledger
-	// already dropped, with no rows left to find it by.
-	if !e.test.skipLedgerResiduePurge {
-		if err := e.ledger.purgeMarkedResidue(ctx); err != nil {
-			return fmt.Errorf("EndSync: purge marked ledger residue: %w", err)
+		if !e.test.skipLedgerResiduePurge {
+			pending, err := e.ledger.residuePending()
+			if err != nil {
+				return err
+			}
+			if pending || needsPurge {
+				started := time.Now()
+				if pending {
+					err = e.ledger.purgeMarkedResidue(ctx)
+				} else {
+					err = e.ledger.purgeResidue(ctx)
+				}
+				cost.LedgerPurge = time.Since(started)
+				if err != nil {
+					return fmt.Errorf("EndSync: purge ledger residue: %w", err)
+				}
+				if hook := e.test.ledgerArchiveHook; hook != nil {
+					if err := hook("after-purge"); err != nil {
+						return err
+					}
+				}
+			}
 		}
-	}
-	// Before ended_at: a finished file must open under every v2 reader.
-	if err := e.withWriteAllowSealed(e.ledger.clearInFlightLocked); err != nil {
-		return fmt.Errorf("EndSync: %w", err)
+	} else if !e.test.skipLedgerResiduePurge {
+		if err := e.ledger.purgeMarkedResidue(ctx); err != nil {
+			return fmt.Errorf("EndSync: purge previously discarded ledger data: %w", err)
+		}
 	}
 	// Preserve all provenance fields while adding the lifecycle stamp.
 	updated := proto.Clone(existing).(*v3.SyncRunRecord)
@@ -422,8 +476,35 @@ func (e *Engine) endSyncFinalize(ctx context.Context, existing *v3.SyncRunRecord
 			return err
 		}
 	}
-	if err := e.PutSyncRunRecord(ctx, updated); err != nil {
-		return err
+	if archiveValue == nil {
+		if err := e.syncRuns.PutSyncRunRecord(ctx, updated); err != nil {
+			return err
+		}
+	} else {
+		// One batch: the finished verdict, the archive, the removal of what
+		// the archive replaces, and the stamp a token-only SDK reads. No
+		// ledger write follows FinishSync.
+		runValue, err := marshalRecord(updated)
+		if err != nil {
+			return err
+		}
+		if err := e.withWriteAllowSealed(func() error {
+			batch := e.db.NewRecordBatch()
+			defer batch.Close()
+			if err := batch.StageLedgerSeal(ledgerArchiveKey(), archiveValue, runValue, retained); err != nil {
+				return err
+			}
+			if err := e.ledger.stageClearInFlight(batch); err != nil {
+				return err
+			}
+			if err := batch.Commit(pebble.Sync); err != nil {
+				return err
+			}
+			e.ledger.inFlight.Store(false)
+			return nil
+		}); err != nil {
+			return fmt.Errorf("EndSync: seal ledger: %w", err)
+		}
 	}
 	if e.test.endSyncPreFlushHook != nil {
 		e.test.endSyncPreFlushHook()
@@ -438,12 +519,12 @@ func (e *Engine) endSyncFinalize(ctx context.Context, existing *v3.SyncRunRecord
 	// every Stats() call pays the iteration cost. We log a warning so
 	// the failure is visible in production telemetry but don't fail
 	// the sync end on stats-sidecar trouble.
-	if err := e.PersistSyncStats(ctx, existing.GetSyncId()); err != nil {
+	if err := e.syncRuns.PersistSyncStats(ctx, existing.GetSyncId()); err != nil {
 		ctxzap.Extract(ctx).Warn("pebble: persist sync stats sidecar failed; Stats() will fall back to O(N) iteration for this file",
 			zap.String("sync_id", existing.GetSyncId()),
 			zap.Error(err),
 		)
-		e.takeSyncStatsOverlay(existing.GetSyncId())
+		e.syncRuns.takeSyncStatsOverlay(existing.GetSyncId())
 	}
 	// The pages above were NoSync and the ended_at stamp was Sync in the
 	// same WAL, so the stamp's fsync put the pages on disk before the
@@ -473,13 +554,13 @@ func (e *Engine) endSyncFinalize(ctx context.Context, existing *v3.SyncRunRecord
 // read+arena-private-write access patterns. Each worker writes to a
 // disjoint range of the records slice and uses its own arena, so no
 // shared mutable state across workers.
-func (e *Engine) PutGrants(ctx context.Context, grants ...*v2.Grant) error {
-	syncID := e.CurrentSyncID()
+func (r *Records) PutGrants(ctx context.Context, grants ...*v2.Grant) error {
+	syncID := r.e.CurrentSyncID()
 	if syncID == "" {
 		return ErrNoCurrentSync
 	}
 	records := translateGrantsForPut(ctx, syncID, grants)
-	if err := e.PutGrantRecords(ctx, records...); err != nil {
+	if err := r.PutGrantRecords(ctx, records...); err != nil {
 		return fmt.Errorf("PutGrants: %w", err)
 	}
 	return nil
@@ -507,13 +588,13 @@ func stampSourceScope[T any](ctx context.Context, records []T, set func(T, strin
 // sync must be fresh, and the caller MUST guarantee each external_id appears at
 // most once across the whole sync (not just within this batch). Live connector
 // writes should use PutGrants.
-func (e *Engine) UnsafePutUniqueGrants(ctx context.Context, grants ...*v2.Grant) error {
-	syncID := e.CurrentSyncID()
+func (r *Records) UnsafePutUniqueGrants(ctx context.Context, grants ...*v2.Grant) error {
+	syncID := r.e.CurrentSyncID()
 	if syncID == "" {
 		return ErrNoCurrentSync
 	}
 	records := translateGrants(syncID, grants)
-	if err := e.UnsafePutUniqueGrantRecords(ctx, records...); err != nil {
+	if err := r.UnsafePutUniqueGrantRecords(ctx, records...); err != nil {
 		return fmt.Errorf("UnsafePutUniqueGrants: %w", err)
 	}
 	return nil
@@ -611,13 +692,13 @@ func translateGrantsSerial(syncID string, grants []*v2.Grant, discoveredAt []*ti
 
 // PutResourceTypes writes a batch of resource types in a single
 // Pebble batch.
-func (e *Engine) PutResourceTypes(ctx context.Context, rts ...*v2.ResourceType) error {
-	syncID := e.CurrentSyncID()
+func (r *Records) PutResourceTypes(ctx context.Context, rts ...*v2.ResourceType) error {
+	syncID := r.e.CurrentSyncID()
 	if syncID == "" {
 		return ErrNoCurrentSync
 	}
 	records := translateResourceTypesForPut(syncID, rts)
-	if err := e.PutResourceTypeRecords(ctx, records...); err != nil {
+	if err := r.PutResourceTypeRecords(ctx, records...); err != nil {
 		return fmt.Errorf("PutResourceTypes: %w", err)
 	}
 	return nil
@@ -643,13 +724,13 @@ func translateResourceTypesForPut(syncID string, rts []*v2.ResourceType) []*v3.R
 }
 
 // PutResources writes a batch of resources in a single Pebble batch.
-func (e *Engine) PutResources(ctx context.Context, resources ...*v2.Resource) error {
-	syncID := e.CurrentSyncID()
+func (r *Records) PutResources(ctx context.Context, resources ...*v2.Resource) error {
+	syncID := r.e.CurrentSyncID()
 	if syncID == "" {
 		return ErrNoCurrentSync
 	}
 	records := translateResourcesForPut(ctx, syncID, resources)
-	if err := e.PutResourceRecords(ctx, records...); err != nil {
+	if err := r.PutResourceRecords(ctx, records...); err != nil {
 		return fmt.Errorf("PutResources: %w", err)
 	}
 	return nil
@@ -676,13 +757,13 @@ func translateResourcesForPut(ctx context.Context, syncID string, resources []*v
 }
 
 // PutEntitlements writes a batch of entitlements in a single Pebble batch.
-func (e *Engine) PutEntitlements(ctx context.Context, entitlements ...*v2.Entitlement) error {
-	syncID := e.CurrentSyncID()
+func (r *Records) PutEntitlements(ctx context.Context, entitlements ...*v2.Entitlement) error {
+	syncID := r.e.CurrentSyncID()
 	if syncID == "" {
 		return ErrNoCurrentSync
 	}
 	records := translateEntitlementsForPut(ctx, syncID, entitlements)
-	if err := e.PutEntitlementRecords(ctx, records...); err != nil {
+	if err := r.PutEntitlementRecords(ctx, records...); err != nil {
 		return fmt.Errorf("PutEntitlements: %w", err)
 	}
 	return nil
@@ -711,12 +792,12 @@ func translateEntitlementsForPut(ctx context.Context, syncID string, entitlement
 // DeleteGrant removes a grant by its raw public id, resolved through the
 // bare-id lookup edge. Callers holding the full grant should prefer
 // DeleteGrantByRefs, which needs no id-string resolution.
-func (e *Engine) DeleteGrant(ctx context.Context, grantID string) error {
-	syncID := e.CurrentSyncID()
+func (r *Records) DeleteGrant(ctx context.Context, grantID string) error {
+	syncID := r.e.CurrentSyncID()
 	if syncID == "" {
 		return ErrNoCurrentSync
 	}
-	return e.DeleteGrantRecord(ctx, grantID)
+	return r.DeleteGrantRecord(ctx, grantID)
 }
 
 // DeleteGrantByRefs removes a grant addressed by the structured refs of the
@@ -726,8 +807,8 @@ func (e *Engine) DeleteGrant(ctx context.Context, grantID string) error {
 // interactive/CLI edges (see lookup.go). A grant whose refs cannot derive
 // an identity could not have been stored in the first place, so there is
 // nothing a string could correctly address here.
-func (e *Engine) DeleteGrantByRefs(ctx context.Context, grant *v2.Grant) error {
-	syncID := e.CurrentSyncID()
+func (r *Records) DeleteGrantByRefs(ctx context.Context, grant *v2.Grant) error {
+	syncID := r.e.CurrentSyncID()
 	if syncID == "" {
 		return ErrNoCurrentSync
 	}
@@ -735,7 +816,7 @@ func (e *Engine) DeleteGrantByRefs(ctx context.Context, grant *v2.Grant) error {
 	if _, err := grantIdentityFromRecord(rec); err != nil {
 		return fmt.Errorf("DeleteGrantByRefs: grant %q: %w", grant.GetId(), err)
 	}
-	return e.DeleteGrantByIdentityRefs(ctx, rec)
+	return r.DeleteGrantByIdentityRefs(ctx, rec)
 }
 
 // DeleteGrantsByRefs is the bulk sibling of DeleteGrantByRefs: same exact,
@@ -748,11 +829,11 @@ func (e *Engine) DeleteGrantByRefs(ctx context.Context, grant *v2.Grant) error {
 // source slices (and unmarshals GrantExpandable) per grant, and holding N of
 // those alive alongside N identities would be the largest allocation in a
 // 90k-grant delete.
-func (e *Engine) DeleteGrantsByRefs(ctx context.Context, grants ...*v2.Grant) error {
+func (r *Records) DeleteGrantsByRefs(ctx context.Context, grants ...*v2.Grant) error {
 	if len(grants) == 0 {
 		return nil
 	}
-	syncID := e.CurrentSyncID()
+	syncID := r.e.CurrentSyncID()
 	if syncID == "" {
 		return ErrNoCurrentSync
 	}
@@ -764,15 +845,15 @@ func (e *Engine) DeleteGrantsByRefs(ctx context.Context, grants ...*v2.Grant) er
 		}
 		ids = append(ids, id)
 	}
-	return e.deleteGrantsByIdentities(ctx, grantDeleteBatchChunk, ids)
+	return r.deleteGrantsByIdentities(ctx, grantDeleteBatchChunk, ids)
 }
 
 // PutAsset writes a single asset row. assetRef carries the
 // (resource_type, resource_id) pair we use as the external_id —
 // joined with a "/" separator since the engine's AssetRecord PK is
 // (sync_id, external_id).
-func (e *Engine) PutAsset(ctx context.Context, assetRef *v2.AssetRef, contentType string, data []byte) error {
-	syncID := e.CurrentSyncID()
+func (r *Records) PutAsset(ctx context.Context, assetRef *v2.AssetRef, contentType string, data []byte) error {
+	syncID := r.e.CurrentSyncID()
 	if syncID == "" {
 		return ErrNoCurrentSync
 	}
@@ -790,7 +871,7 @@ func (e *Engine) PutAsset(ctx context.Context, assetRef *v2.AssetRef, contentTyp
 		Data:         data,
 		DiscoveredAt: timestamppb.Now(),
 	}.Build()
-	return e.PutAssetRecord(ctx, rec)
+	return r.PutAssetRecord(ctx, rec)
 }
 
 // Cleanup on the bare Engine is a no-op. The real Pebble
@@ -812,15 +893,15 @@ func (e *Engine) Cleanup(ctx context.Context) error { return nil }
 // GetAsset returns the (content_type, data-reader) for the given
 // asset. The returned reader is backed by a bytes.Reader over the
 // fully-materialized blob.
-func (e *Engine) GetAsset(ctx context.Context, req *v2.AssetServiceGetAssetRequest) (string, io.Reader, error) {
-	syncID := e.CurrentSyncID()
+func (r *Records) GetAsset(ctx context.Context, req *v2.AssetServiceGetAssetRequest) (string, io.Reader, error) {
+	syncID := r.e.CurrentSyncID()
 	if syncID == "" {
 		return "", nil, ErrNoCurrentSync
 	}
 	if req == nil || req.GetAsset() == nil {
 		return "", nil, errors.New("GetAsset: nil request")
 	}
-	rec, err := e.GetAssetRecord(ctx, req.GetAsset().GetId())
+	rec, err := r.GetAssetRecord(ctx, req.GetAsset().GetId())
 	if err != nil {
 		return "", nil, c1zstore.AdaptNotFound(err, pebble.ErrNotFound)
 	}
@@ -844,8 +925,8 @@ func (e *Engine) GetAsset(ctx context.Context, req *v2.AssetServiceGetAssetReque
 //     grants.resource_id / resource_type_id (the entitlement's
 //     resource columns). Callers who want to filter by principal
 //     should use ListGrantsForPrincipal instead.
-func (e *Engine) ListGrants(ctx context.Context, req *v2.GrantsServiceListGrantsRequest) (*v2.GrantsServiceListGrantsResponse, error) {
-	syncID, err := e.resolveActiveSync(ctx, req.GetActiveSyncId(), req.GetAnnotations())
+func (r *Records) ListGrants(ctx context.Context, req *v2.GrantsServiceListGrantsRequest) (*v2.GrantsServiceListGrantsResponse, error) {
+	syncID, err := r.e.resolveActiveSync(ctx, req.GetActiveSyncId(), req.GetAnnotations())
 	if err != nil {
 		return nil, err
 	}
@@ -856,11 +937,11 @@ func (e *Engine) ListGrants(ctx context.Context, req *v2.GrantsServiceListGrants
 	cursor := req.GetPageToken()
 	var records []*v3.GrantRecord
 	var nextCursor string
-	if r := req.GetResource(); r != nil && r.GetId() != nil {
-		records, nextCursor, err = e.PaginateGrantsByEntitlementResource(ctx,
-			r.GetId().GetResourceType(), r.GetId().GetResource(), cursor, limit)
+	if rec2 := req.GetResource(); rec2 != nil && rec2.GetId() != nil {
+		records, nextCursor, err = r.PaginateGrantsByEntitlementResource(ctx,
+			rec2.GetId().GetResourceType(), rec2.GetId().GetResource(), cursor, limit)
 	} else {
-		records, nextCursor, err = e.PaginateGrants(ctx, cursor, limit)
+		records, nextCursor, err = r.PaginateGrants(ctx, cursor, limit)
 	}
 	if err != nil {
 		return nil, c1zstore.AdaptNotFound(err, pebble.ErrNotFound)
@@ -885,8 +966,8 @@ func (e *Engine) ListGrants(ctx context.Context, req *v2.GrantsServiceListGrants
 // only resource_type_id is set, we still iterate the full primary
 // range and post-filter — adding a by_resource_type index is a
 // future-work item if this path becomes hot.
-func (e *Engine) ListResources(ctx context.Context, req *v2.ResourcesServiceListResourcesRequest) (*v2.ResourcesServiceListResourcesResponse, error) {
-	syncID, err := e.resolveActiveSync(ctx, req.GetActiveSyncId(), req.GetAnnotations())
+func (r *Records) ListResources(ctx context.Context, req *v2.ResourcesServiceListResourcesRequest) (*v2.ResourcesServiceListResourcesResponse, error) {
+	syncID, err := r.e.resolveActiveSync(ctx, req.GetActiveSyncId(), req.GetAnnotations())
 	if err != nil {
 		return nil, err
 	}
@@ -894,87 +975,31 @@ func (e *Engine) ListResources(ctx context.Context, req *v2.ResourcesServiceList
 		return nil, ErrNoCurrentSync
 	}
 	limit := clampPageSize(req.GetPageSize())
-	cursor := req.GetPageToken()
-	rtFilter := req.GetResourceTypeId()
-	parent := req.GetParentResourceId()
-	useParent := parent != nil && parent.GetResource() != ""
-
-	// cursorFor returns the engine cursor for rec under the path
-	// this call is iterating — primary keyspace for the unfiltered
-	// case, by_parent index for the parent-scoped case. We need
-	// per-record cursors because a post-filter break at len(out) ==
-	// limit may leave matching records unconsumed in the engine
-	// page; emitting the engine's end-of-page cursor would skip
-	// them on the next call.
-	cursorFor := func(rec *v3.ResourceRecord) string {
-		if useParent {
-			return encodeCursor(rawdb.EncodeResourceByParentIndexKey(
-				parent.GetResourceType(), parent.GetResource(),
-				rec.GetResourceTypeId(), rec.GetResourceId(),
-			))
-		}
-		return encodeCursor(encodeResourceKey(rec.GetResourceTypeId(), rec.GetResourceId()))
+	rt := req.GetResourceTypeId()
+	var records []*v3.ResourceRecord
+	var next string
+	if parent := req.GetParentResourceId(); parent.GetResource() != "" {
+		records, next, err = r.paginateResourcesByParent(ctx, parent.GetResourceType(), parent.GetResource(), rt, req.GetPageToken(), limit)
+	} else {
+		records, next, err = r.paginateResources(ctx, rt, req.GetPageToken(), limit)
 	}
-
-	out := make([]*v2.Resource, 0, limit)
-	var nextCursor string
-	for len(out) < limit {
-		pageLimit := limit - len(out)
-		// Over-fetch a little when post-filtering so a sparse hit rate
-		// doesn't force a tail of extra round-trips. 4x is the cap; if
-		// rtFilter is empty we skip the over-fetch entirely.
-		fetchLimit := pageLimit
-		if rtFilter != "" {
-			fetchLimit = pageLimit * 4
-			if fetchLimit > MaxPageSize {
-				fetchLimit = MaxPageSize
-			}
-		}
-		var records []*v3.ResourceRecord
-		var err error
-		if useParent {
-			records, nextCursor, err = e.PaginateResourcesByParent(ctx,
-				parent.GetResourceType(), parent.GetResource(), cursor, fetchLimit)
-		} else {
-			records, nextCursor, err = e.PaginateResources(ctx, cursor, fetchLimit)
-		}
-		if err != nil {
-			return nil, c1zstore.AdaptNotFound(err, pebble.ErrNotFound)
-		}
-		brokeEarly := false
-		for _, rec := range records {
-			if rtFilter != "" && rec.GetResourceTypeId() != rtFilter {
-				continue
-			}
-
-			out = append(out, V3ResourceToV2(rec))
-			if len(out) == limit {
-				// Override the engine's end-of-page cursor with
-				// THIS record's cursor so the next page resumes
-				// strictly after this record.
-				nextCursor = cursorFor(rec)
-				brokeEarly = true
-				break
-			}
-		}
-		if brokeEarly {
-			break
-		}
-		if nextCursor == "" || len(records) == 0 {
-			break
-		}
-		cursor = nextCursor
+	if err != nil {
+		return nil, c1zstore.AdaptNotFound(err, pebble.ErrNotFound)
+	}
+	out := make([]*v2.Resource, 0, len(records))
+	for _, rec := range records {
+		out = append(out, V3ResourceToV2(rec))
 	}
 	return v2.ResourcesServiceListResourcesResponse_builder{
 		List:          out,
-		NextPageToken: nextCursor,
+		NextPageToken: next,
 	}.Build(), nil
 }
 
 // ListResourceTypes returns up to page_size resource_types. Pagination
 // matches SQLite (see ListGrants).
-func (e *Engine) ListResourceTypes(ctx context.Context, req *v2.ResourceTypesServiceListResourceTypesRequest) (*v2.ResourceTypesServiceListResourceTypesResponse, error) {
-	syncID, err := e.resolveActiveSync(ctx, req.GetActiveSyncId(), req.GetAnnotations())
+func (r *Records) ListResourceTypes(ctx context.Context, req *v2.ResourceTypesServiceListResourceTypesRequest) (*v2.ResourceTypesServiceListResourceTypesResponse, error) {
+	syncID, err := r.e.resolveActiveSync(ctx, req.GetActiveSyncId(), req.GetAnnotations())
 	if err != nil {
 		return nil, err
 	}
@@ -982,7 +1007,7 @@ func (e *Engine) ListResourceTypes(ctx context.Context, req *v2.ResourceTypesSer
 		return nil, ErrNoCurrentSync
 	}
 	limit := clampPageSize(req.GetPageSize())
-	records, nextCursor, err := e.PaginateResourceTypes(ctx, req.GetPageToken(), limit)
+	records, nextCursor, err := r.PaginateResourceTypes(ctx, req.GetPageToken(), limit)
 	if err != nil {
 		return nil, c1zstore.AdaptNotFound(err, pebble.ErrNotFound)
 	}
@@ -999,8 +1024,8 @@ func (e *Engine) ListResourceTypes(ctx context.Context, req *v2.ResourceTypesSer
 // ListEntitlements returns up to page_size entitlements, optionally
 // filtered by Resource (resource_type_id, resource_id). Pagination
 // matches SQLite (see ListGrants).
-func (e *Engine) ListEntitlements(ctx context.Context, req *v2.EntitlementsServiceListEntitlementsRequest) (*v2.EntitlementsServiceListEntitlementsResponse, error) {
-	syncID, err := e.resolveActiveSync(ctx, req.GetActiveSyncId(), req.GetAnnotations())
+func (r *Records) ListEntitlements(ctx context.Context, req *v2.EntitlementsServiceListEntitlementsRequest) (*v2.EntitlementsServiceListEntitlementsResponse, error) {
+	syncID, err := r.e.resolveActiveSync(ctx, req.GetActiveSyncId(), req.GetAnnotations())
 	if err != nil {
 		return nil, err
 	}
@@ -1011,11 +1036,11 @@ func (e *Engine) ListEntitlements(ctx context.Context, req *v2.EntitlementsServi
 	cursor := req.GetPageToken()
 	var records []*v3.EntitlementRecord
 	var nextCursor string
-	if r := req.GetResource(); r != nil && r.GetId() != nil {
-		records, nextCursor, err = e.PaginateEntitlementsByResource(ctx,
-			r.GetId().GetResourceType(), r.GetId().GetResource(), cursor, limit)
+	if rec2 := req.GetResource(); rec2 != nil && rec2.GetId() != nil {
+		records, nextCursor, err = r.PaginateEntitlementsByResource(ctx,
+			rec2.GetId().GetResourceType(), rec2.GetId().GetResource(), cursor, limit)
 	} else {
-		records, nextCursor, err = e.PaginateEntitlements(ctx, cursor, limit)
+		records, nextCursor, err = r.PaginateEntitlements(ctx, cursor, limit)
 	}
 	if err != nil {
 		return nil, c1zstore.AdaptNotFound(err, pebble.ErrNotFound)
@@ -1034,7 +1059,7 @@ func (e *Engine) ListEntitlements(ctx context.Context, req *v2.EntitlementsServi
 // ListEntitlements that some connectors expose for static (compile-
 // time-known) entitlements. C1File returns an empty list; the
 // Pebble adapter mirrors that contract.
-func (e *Engine) ListStaticEntitlements(
+func (r *Records) ListStaticEntitlements(
 	_ context.Context,
 	_ *v2.EntitlementsServiceListStaticEntitlementsRequest,
 ) (*v2.EntitlementsServiceListStaticEntitlementsResponse, error) {
@@ -1047,20 +1072,20 @@ func (e *Engine) ListStaticEntitlements(
 // === reader_v2 surface ===
 
 // GetGrant fetches a single grant by ID.
-func (e *Engine) GetGrant(ctx context.Context, req *reader_v2.GrantsReaderServiceGetGrantRequest) (*reader_v2.GrantsReaderServiceGetGrantResponse, error) {
+func (r *Records) GetGrant(ctx context.Context, req *reader_v2.GrantsReaderServiceGetGrantRequest) (*reader_v2.GrantsReaderServiceGetGrantResponse, error) {
 	// Resolve the sync like the other grant readers (annotation → current
 	// binding → latest-finished record) rather than gating on the in-memory
 	// CurrentSyncID alone: a sealed c1z reopened without a re-bind still has
 	// its sync_id persisted in the SyncRunRecord, and this honors a
 	// request-annotation sync_id the way SQLite's GetGrant does.
-	syncID, err := e.resolveActiveSyncForReader(ctx, req.GetAnnotations())
+	syncID, err := r.e.resolveActiveSyncForReader(ctx, req.GetAnnotations())
 	if err != nil {
 		return nil, err
 	}
 	if syncID == "" {
 		return nil, ErrNoCurrentSync
 	}
-	rec, err := e.GetGrantRecord(ctx, req.GetGrantId())
+	rec, err := r.GetGrantRecord(ctx, req.GetGrantId())
 	if err != nil {
 		return nil, c1zstore.AdaptNotFound(err, pebble.ErrNotFound)
 	}
@@ -1074,7 +1099,7 @@ func (e *Engine) GetGrant(ctx context.Context, req *reader_v2.GrantsReaderServic
 // Delegates to Engine.LatestFinishedSyncRecord; see that method for
 // the predicate + tiebreaker contract.
 func (e *Engine) LatestFinishedSyncID(ctx context.Context, syncType connectorstore.SyncType) (string, error) {
-	latest, err := e.LatestFinishedSyncRecord(ctx, syncTypeFilterFromConnectorstore(syncType))
+	latest, err := e.syncRuns.LatestFinishedSyncRecord(ctx, syncTypeFilterFromConnectorstore(syncType))
 	if err != nil {
 		return "", err
 	}
@@ -1170,12 +1195,40 @@ func (r *bytesReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+// LedgerState is the pass's state in one read: the declaration's phase, the
+// sync-run record's ended_at, and whether a legacy token awaits takeover.
+func (e *Engine) LedgerState(ctx context.Context) (c1zstore.LedgerState, error) {
+	var state c1zstore.LedgerState
+	if err := ctx.Err(); err != nil {
+		return state, err
+	}
+	_, phase, err := e.ledger.workState()
+	if err != nil {
+		return state, err
+	}
+	state.Phase = phase
+	syncID := e.CurrentSyncID()
+	if syncID == "" {
+		return state, nil
+	}
+	rec, err := e.syncRuns.GetSyncRunRecord(ctx, syncID)
+	if err != nil {
+		if errors.Is(err, pebble.ErrNotFound) {
+			return state, nil
+		}
+		return state, err
+	}
+	state.Finished = rec.GetEndedAt() != nil
+	state.Token = rec.GetSyncToken() != ""
+	return state, nil
+}
+
 func (e *Engine) BoundSyncFinished(ctx context.Context) (bool, error) {
 	syncID := e.CurrentSyncID()
 	if syncID == "" {
 		return false, nil
 	}
-	rec, err := e.GetSyncRunRecord(ctx, syncID)
+	rec, err := e.syncRuns.GetSyncRunRecord(ctx, syncID)
 	if err != nil {
 		if errors.Is(err, pebble.ErrNotFound) {
 			return false, nil

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/cockroachdb/pebble/v2"
@@ -120,12 +121,12 @@ func grantDigestABIStampValue() []byte {
 // with no nodes there is nothing to trust, and every build rewrites the
 // stamp on its completion side (the fold's opening DeleteRange erases
 // it first).
-func (e *Engine) verifyGrantDigestABI(ctx context.Context, readOnly bool) error {
-	e.grantDigestAbiStale.Store(false)
-	if !e.db.GrantDigestsPresent() {
+func (d *Digests) verifyGrantDigestABI(ctx context.Context, readOnly bool) error {
+	d.grantDigestAbiStale.Store(false)
+	if !d.e.db.GrantDigestsPresent() {
 		return nil
 	}
-	stamped, err := e.readGrantDigestABIStamp()
+	stamped, err := d.readGrantDigestABIStamp()
 	if err != nil {
 		return err
 	}
@@ -133,13 +134,13 @@ func (e *Engine) verifyGrantDigestABI(ctx context.Context, readOnly bool) error 
 		return nil
 	}
 	if readOnly {
-		e.grantDigestAbiStale.Store(true)
+		d.grantDigestAbiStale.Store(true)
 		return nil
 	}
 	ctxzap.Extract(ctx).Warn("pebble: grant digest state was built under a different hash ABI; dropping it — the next EndSync rebuilds it from scratch",
 		zap.Uint32("stamped_abi", stamped),
 		zap.Uint32("current_abi", GrantDigestABIVersion))
-	return e.dropAllGrantDigestStateLocked()
+	return d.dropAllGrantDigestStateLocked()
 }
 
 // readGrantDigestABIStamp returns the ABI version the file's digest
@@ -149,8 +150,8 @@ func (e *Engine) verifyGrantDigestABI(ctx context.Context, readOnly bool) error 
 // is, so it can never pass as current. Only meaningful when digest
 // nodes are present — with none, there is no state for the stamp to
 // describe.
-func (e *Engine) readGrantDigestABIStamp() (uint32, error) {
-	val, closer, err := e.db.Get(rawdb.GrantDigestABIStampKey())
+func (d *Digests) readGrantDigestABIStamp() (uint32, error) {
+	val, closer, err := d.e.db.Get(rawdb.GrantDigestABIStampKey())
 	if err != nil {
 		if errors.Is(err, pebble.ErrNotFound) {
 			return grantDigestABIVersionUnstamped, nil
@@ -318,18 +319,14 @@ type grantSourceFact struct {
 // by construction before they build the fact list — but they still route
 // through here for one sort implementation.
 //
-// The insertion sort below is stable, so a run of equal keys is left in
-// wire/encounter order after sorting; collapsing each run to its last
-// element is therefore exactly "last write wins". Returns the
-// (possibly shortened) slice, reusing s's backing array — callers must
-// use the returned slice, not their original variable.
+// The fact list's length and order come from the stored value, so the
+// sort must stay O(n log n) on any input order. It is stable, so
+// collapsing each run of equal keys to its last element is exactly "last
+// write wins". Returns the (possibly shortened) slice, reusing s's backing
+// array — callers must use the returned slice, not their original
+// variable.
 func sortGrantSourceFacts(s []grantSourceFact) []grantSourceFact {
-	// Small-n insertion sort: source sets are tiny (usually 0–4).
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && bytes.Compare(s[j].key, s[j-1].key) < 0; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
+	slices.SortStableFunc(s, func(a, b grantSourceFact) int { return bytes.Compare(a.key, b.key) })
 	// Collapse runs of equal keys, keeping the last of each run.
 	out := s[:0]
 	for i := 0; i < len(s); i++ {
@@ -407,30 +404,45 @@ func grantContentHash64(tuple, primaryKeyTail []byte, isImmutable bool, sortedSo
 	return xxhash.Sum64(tuple), tuple
 }
 
-// grantContentHashForRecord is the from-record form of the content
-// hash: encodes the grant's identity tuple, its immutability, and its
-// sorted sources, then delegates to grantContentHash64. The seal-time
-// build never uses this (it splices key bytes and raw-scans the
-// value); it exists for readers, tests, and any future repair path,
-// and is pinned against the splice form by
-// TestGrantDigestSpliceMatchesEncode.
+// grantContentHashForRecord is GrantRecordContentHash with the result
+// encoded as the stored 8-byte big-endian hash. The seal-time build
+// never uses this (it splices key bytes and raw-scans the value); it is
+// pinned against the splice form by TestGrantDigestSpliceMatchesEncode.
 func grantContentHashForRecord(r *v3.GrantRecord) ([]byte, error) {
-	id, err := grantIdentityFromRecord(r)
+	h, err := GrantRecordContentHash(r)
 	if err != nil {
 		return nil, err
 	}
+	return binary.BigEndian.AppendUint64(make([]byte, 0, hashLen), h), nil
+}
+
+// grantContentHashFromFacts is the shared tail of GrantContentHash and
+// GrantRecordContentHash: encode the identity key, then hash it with
+// the immutability flag and the sorted sources via grantContentHash64.
+func grantContentHashFromFacts(id grantIdentity, isImmutable bool, srcs []grantSourceFact) uint64 {
 	key := encodeGrantIdentityKey(id)
-	isImmutable := annsContainType(r.GetAnnotations(), grantImmutableAnnotationTypeName)
+	// nil scratch: the tuple buffer only pays off when reused across records.
+	h, _ := grantContentHash64(nil, key[grantPrimaryKeyPrefixLen:], isImmutable, sortGrantSourceFacts(srcs))
+	return h
+}
+
+// GrantRecordContentHash is GrantContentHash for a v3 GrantRecord. A
+// record and the v2 grant it was converted from hash identically. A
+// record missing its structural identity errors.
+//
+// ABI: pinned to GrantDigestABIVersion alongside the internal forms.
+func GrantRecordContentHash(r *v3.GrantRecord) (uint64, error) {
+	id, err := grantIdentityFromRecord(r)
+	if err != nil {
+		return 0, fmt.Errorf("grant content hash: %w", err)
+	}
 	srcMap := r.GetSources()
 	srcs := make([]grantSourceFact, 0, len(srcMap))
 	for k, v := range srcMap {
 		srcs = append(srcs, grantSourceFact{key: []byte(k), isDirect: v.GetIsDirect()})
 	}
-	srcs = sortGrantSourceFacts(srcs)
-	h, _ := grantContentHash64(nil, key[grantPrimaryKeyPrefixLen:], isImmutable, srcs)
-	out := make([]byte, hashLen)
-	binary.BigEndian.PutUint64(out, h)
-	return out, nil
+	isImmutable := annsContainType(r.GetAnnotations(), grantImmutableAnnotationTypeName)
+	return grantContentHashFromFacts(id, isImmutable, srcs), nil
 }
 
 // GrantContentHash is the public form of the grant content hash
@@ -438,6 +450,7 @@ func grantContentHashForRecord(r *v3.GrantRecord) ([]byte, error) {
 // 8-byte big-endian hash encodes. Use it (or GrantDigestAccumulator,
 // its fold) to digest grants not held in a pebble file — e.g. a legacy
 // SQLite c1z — for comparison against engine-served digests.
+// GrantRecordContentHash is the same for a v3 GrantRecord.
 //
 // Hash grants as stored, not as emitted: expansion populates the
 // sources map after ingest, so raw connector output hashes differently
@@ -463,22 +476,20 @@ func GrantContentHash(g *v2.Grant) (uint64, error) {
 		principalTypeID: princ.GetResourceType(),
 		principalID:     princ.GetResource(),
 	}
-	key := encodeGrantIdentityKey(id)
-	isImmutable := annsContainType(g.GetAnnotations(), grantImmutableAnnotationTypeName)
 	sources := g.GetSources().GetSources()
 	srcs := make([]grantSourceFact, 0, len(sources))
 	for k, v := range sources {
 		srcs = append(srcs, grantSourceFact{key: []byte(k), isDirect: v.GetIsDirect()})
 	}
-	srcs = sortGrantSourceFacts(srcs)
-	h, _ := grantContentHash64(nil, key[grantPrimaryKeyPrefixLen:], isImmutable, srcs)
-	return h, nil
+	isImmutable := annsContainType(g.GetAnnotations(), grantImmutableAnnotationTypeName)
+	return grantContentHashFromFacts(id, isImmutable, srcs), nil
 }
 
-// GrantDigestAccumulator XOR/count-folds GrantContentHash over a set of
-// grants. Fold one entitlement's grants to reproduce its stored digest
-// root (GetEntitlementDigestRoot), or every grant in a sync to
-// reproduce the whole-file root (GetGrantDigestGlobalRoot / the
+// GrantDigestAccumulator XOR/count-folds GrantContentHash (or
+// GrantRecordContentHash, via AddRecord) over a set of grants. Fold one
+// entitlement's grants to reproduce its stored digest root
+// (GetEntitlementDigestRoot), or every grant in a sync to reproduce the
+// whole-file root (GetGrantDigestGlobalRoot / the
 // manifest's GrantDigestRoot.xor_digest — per-entitlement roots
 // XOR-combine, so the flat fold equals the fold of roots). Compare only
 // digests computed under the same GrantDigestABIVersion; see
@@ -494,6 +505,18 @@ type GrantDigestAccumulator struct {
 // rejects leaves it unchanged.
 func (a *GrantDigestAccumulator) Add(g *v2.Grant) error {
 	h, err := GrantContentHash(g)
+	if err != nil {
+		return err
+	}
+	a.xor ^= h
+	a.count++
+	return nil
+}
+
+// AddRecord is Add for a v3 GrantRecord; a record
+// GrantRecordContentHash rejects leaves the accumulator unchanged.
+func (a *GrantDigestAccumulator) AddRecord(r *v3.GrantRecord) error {
+	h, err := GrantRecordContentHash(r)
 	if err != nil {
 		return err
 	}
@@ -585,8 +608,8 @@ func grantPrimaryKeyFromHashIndexKey(dst, idxKey []byte) ([]byte, bool) {
 // nodes, so with no root it is absent too and the fold would report
 // "zero grants" for an entitlement that may have millions — the
 // false-clean trap dirtyPartitionBuckets' doc comment describes.
-func (e *Engine) GetEntitlementDigestRoot(ctx context.Context, id entitlementIdentity) (DigestRoot, bool, error) {
-	return e.getPartitionDigestRoot(grantDigestSpec, digestPartitionForEntitlement(id))
+func (d *Digests) GetEntitlementDigestRoot(ctx context.Context, id entitlementIdentity) (DigestRoot, bool, error) {
+	return d.getPartitionDigestRoot(grantDigestSpec, digestPartitionForEntitlement(id))
 }
 
 // GetGrantDigestGlobalRoot returns the whole-file grant digest root —
@@ -598,8 +621,8 @@ func (e *Engine) GetEntitlementDigestRoot(ctx context.Context, id entitlementIde
 // compaction that runs BuildGrantDigests) and dropped by the same
 // invalidation paths that drop any per-entitlement root — see
 // stageGrantDigestInvalidation and the Drop* functions below.
-func (e *Engine) GetGrantDigestGlobalRoot(ctx context.Context) (DigestRoot, bool, error) {
-	if e.grantDigestStateUntrusted() {
+func (d *Digests) GetGrantDigestGlobalRoot(ctx context.Context) (DigestRoot, bool, error) {
+	if d.e.grantDigestStateUntrusted() {
 		// Same guard as getPartitionDigestRoot: a global root committed
 		// by an interrupted build must read as absent, not certify a
 		// hash index that was never ingested — and one computed under a
@@ -607,7 +630,7 @@ func (e *Engine) GetGrantDigestGlobalRoot(ctx context.Context) (DigestRoot, bool
 		// as absent rather than compare hashes from another scheme.
 		return DigestRoot{}, false, nil
 	}
-	val, closer, err := e.db.Get(rawdb.GlobalGrantDigestNodeKey())
+	val, closer, err := d.e.db.Get(rawdb.GlobalGrantDigestNodeKey())
 	if err != nil {
 		if errors.Is(err, pebble.ErrNotFound) {
 			return DigestRoot{}, false, nil
@@ -642,19 +665,19 @@ func (e *Engine) GetGrantDigestGlobalRoot(ctx context.Context) (DigestRoot, bool
 // no stored-root check of its own to lean on — would return digests
 // derived from untrustworthy content. Report the same {0, 0} "not
 // built / absent" shape a never-built partition already produces.
-func (e *Engine) ComputeEntitlementBucketDigest(ctx context.Context, id entitlementIdentity, bucket DigestBucket) ([]byte, int64, error) {
-	if e.grantDigestStateUntrusted() {
+func (d *Digests) ComputeEntitlementBucketDigest(ctx context.Context, id entitlementIdentity, bucket DigestBucket) ([]byte, int64, error) {
+	if d.e.grantDigestStateUntrusted() {
 		return make([]byte, hashLen), 0, nil
 	}
-	return e.computeBucketDigest(ctx, grantDigestSpec, digestPartitionForEntitlement(id), bucket)
+	return d.computeBucketDigest(ctx, grantDigestSpec, digestPartitionForEntitlement(id), bucket)
 }
 
 // DirtyEntitlementBuckets compares this engine's entitlement against
 // other's and returns the buckets whose grants differ — see
 // dirtyPartitionBuckets for the comparison contract (zero bucket =
 // whole entitlement; nil = identical).
-func (e *Engine) DirtyEntitlementBuckets(ctx context.Context, other *Engine, id entitlementIdentity) ([]DigestBucket, error) {
-	return e.dirtyPartitionBuckets(ctx, grantDigestSpec, other, digestPartitionForEntitlement(id))
+func (d *Digests) DirtyEntitlementBuckets(ctx context.Context, other *Engine, id entitlementIdentity) ([]DigestBucket, error) {
+	return d.dirtyPartitionBuckets(ctx, grantDigestSpec, other, digestPartitionForEntitlement(id))
 }
 
 // IterateGrantsByEntitlementBucket yields the grants in one
@@ -675,9 +698,9 @@ func (e *Engine) DirtyEntitlementBuckets(ctx context.Context, other *Engine, id 
 // file's bucket placement is still exact, and this keeps yielding the
 // grants a caller already knows to be dirty even on a read-only open
 // over a stale ABI stamp.
-func (e *Engine) IterateGrantsByEntitlementBucket(ctx context.Context, id entitlementIdentity, bucket DigestBucket, yield func(*v3.GrantRecord) bool) error {
+func (d *Digests) IterateGrantsByEntitlementBucket(ctx context.Context, id entitlementIdentity, bucket DigestBucket, yield func(*v3.GrantRecord) bool) error {
 	lower, upper := grantDigestSpec.bucketBounds(digestPartitionForEntitlement(id), bucket)
-	iter, err := e.db.NewIter(&pebble.IterOptions{LowerBound: lower, UpperBound: upper})
+	iter, err := d.e.db.NewIter(&pebble.IterOptions{LowerBound: lower, UpperBound: upper})
 	if err != nil {
 		return err
 	}
@@ -692,7 +715,7 @@ func (e *Engine) IterateGrantsByEntitlementBucket(ctx context.Context, id entitl
 		if !ok {
 			continue
 		}
-		val, closer, getErr := e.db.Get(priKey)
+		val, closer, getErr := d.e.db.Get(priKey)
 		if getErr != nil {
 			if errors.Is(getErr, pebble.ErrNotFound) {
 				continue
@@ -717,10 +740,10 @@ func (e *Engine) IterateGrantsByEntitlementBucket(ctx context.Context, id entitl
 // present would violate the present-means-exact contract, whereas
 // absent digests just make readers re-read the grants until the next
 // successful seal recalculates them.
-func (e *Engine) DropAllGrantDigests(ctx context.Context) error {
-	return e.withWrite(func() error {
-		e.db.SetGrantDigestsPresent(false)
-		return e.db.DropKeyRange(DigestLowerBound(), DigestUpperBound(), writeOpts(e.opts.durability))
+func (d *Digests) DropAllGrantDigests(ctx context.Context) error {
+	return d.e.withWrite(func() error {
+		d.e.db.SetGrantDigestsPresent(false)
+		return d.e.db.DropKeyRange(DigestLowerBound(), DigestUpperBound(), writeOpts(d.e.opts.durability))
 	})
 }
 
@@ -734,14 +757,14 @@ func (e *Engine) DropAllGrantDigests(ctx context.Context) error {
 // Two range tombstones: the digest keyspace and the hash-index
 // keyspace are NOT adjacent (typeCounter/typeSession sit between
 // them), so this must never be collapsed into one span.
-func (e *Engine) DropAllGrantDigestState(ctx context.Context) error {
-	return e.withWrite(func() error {
-		e.db.SetGrantDigestsPresent(false)
-		opts := writeOpts(e.opts.durability)
-		if err := e.db.DropKeyRange(DigestLowerBound(), DigestUpperBound(), opts); err != nil {
+func (d *Digests) DropAllGrantDigestState(ctx context.Context) error {
+	return d.e.withWrite(func() error {
+		d.e.db.SetGrantDigestsPresent(false)
+		opts := writeOpts(d.e.opts.durability)
+		if err := d.e.db.DropKeyRange(DigestLowerBound(), DigestUpperBound(), opts); err != nil {
 			return err
 		}
-		return e.db.DropKeyRange(GrantByEntPrincHashLowerBound(), GrantByEntPrincHashUpperBound(), opts)
+		return d.e.db.DropKeyRange(GrantByEntPrincHashLowerBound(), GrantByEntPrincHashUpperBound(), opts)
 	})
 }
 

@@ -13,6 +13,7 @@ import (
 
 	v3 "github.com/conductorone/baton-sdk/pb/c1/storage/v3"
 	"github.com/conductorone/baton-sdk/pkg/dotc1z/c1zstore"
+	"github.com/conductorone/baton-sdk/pkg/dotc1z/engine/pebble/internal/rawdb"
 )
 
 var ErrPageUnitCommitted = errors.New("pebble page unit: already committed or discarded")
@@ -32,6 +33,7 @@ type pageUnit struct {
 	entitlements   []*v3.EntitlementRecord
 	entitlementIdx map[string][]int
 	grants         []*v3.GrantRecord
+	assets         []*v3.AssetRecord
 	// Applied at Commit after the puts, in the same batch; a buffered put of the
 	// same identity is dropped, as when the two are separate store calls.
 	grantDeletes []grantIdentity
@@ -41,11 +43,102 @@ type pageUnit struct {
 	bucketKey   []byte
 	bucketValue *v3.LedgerCounterBucket
 
-	done bool
+	work          *c1zstore.LedgerWork
+	childWorkKeys []string
+	restart       *c1zstore.RestartLimits
+	trustedImport bool
+	sealing       bool
+	done          bool
+}
+
+var ErrPageUnitRestart = errors.New("pebble page unit: restart page")
+
+func (u *pageUnit) StageRestart(limits c1zstore.RestartLimits) error {
+	if u.done {
+		return ErrPageUnitCommitted
+	}
+	if limits.PerAction == 0 || limits.PerSync == 0 {
+		return fmt.Errorf("%w: limits must be positive", ErrPageUnitRestart)
+	}
+	u.restart = &limits
+	return nil
+}
+
+// A restart page carries the row and the pending-item transition and
+// nothing else.
+func (u *pageUnit) requireRestartShape(row *v3.LedgerRow) error {
+	if (u.restart != nil) != row.GetRestarted() {
+		return fmt.Errorf("%w: SetRestart and row.Restarted disagree", ErrPageUnitRestart)
+	}
+	if u.restart == nil {
+		return nil
+	}
+	if u.work == nil {
+		return fmt.Errorf("%w: requires pending work", ErrPageUnitRestart)
+	}
+	if u.sealing || len(row.GetChildren()) != 0 || len(u.childWorkKeys) != 0 {
+		return fmt.Errorf("%w: must not carry children, claims, or the terminal mark", ErrPageUnitRestart)
+	}
+	if len(u.resourceTypes)+len(u.resources)+len(u.entitlements)+len(u.grants)+len(u.assets)+len(u.grantDeletes) != 0 {
+		return fmt.Errorf("%w: must not carry records", ErrPageUnitRestart)
+	}
+	return nil
 }
 
 type ledgerFact struct {
 	name, value string
+}
+
+func (u *pageUnit) StageQueueSealing() error {
+	if u.done {
+		return ErrPageUnitCommitted
+	}
+	u.sealing = true
+	return nil
+}
+
+func (u *pageUnit) StageTrustedImport() error {
+	if u.done {
+		return ErrPageUnitCommitted
+	}
+	u.trustedImport = true
+	return nil
+}
+
+// Under the write lock, before anything is staged. Every page checks the
+// phase; the terminal page also checks the queue and its own row.
+func (u *pageUnit) stagePhaseLocked(batch *rawdb.RecordBatch, row *v3.LedgerRow) error {
+	last, phase, err := u.l.workState()
+	if err != nil {
+		return err
+	}
+	switch phase {
+	case c1zstore.LedgerQueueSealing:
+		return fmt.Errorf("%w: %s", ErrLedgerQueuePhase, phase)
+	case c1zstore.LedgerQueueExpanding:
+		// The terminal page is the one page Expanding accepts.
+		if !u.sealing {
+			return fmt.Errorf("%w: %s", ErrLedgerQueuePhase, phase)
+		}
+	case c1zstore.LedgerQueueAbsent, c1zstore.LedgerQueueCollecting:
+	}
+	if !u.sealing {
+		return nil
+	}
+	if phase == c1zstore.LedgerQueueAbsent {
+		return errors.New("terminal page requires a pending-work declaration")
+	}
+	if u.work != nil || row.GetNextPageToken() != "" || len(row.GetChildren()) != 0 {
+		return errors.New("terminal page must not carry work, a continuation or children")
+	}
+	pending, err := u.l.hasPendingWorkLocked()
+	if err != nil {
+		return err
+	}
+	if pending {
+		return errors.New("terminal page requires an empty pending-work queue")
+	}
+	return stageWorkState(batch, last, c1zstore.LedgerQueueSealing)
 }
 
 func (u *pageUnit) StageFactValue(name, value string) error {
@@ -65,6 +158,9 @@ func (u *pageUnit) StageFact(name string) error {
 }
 
 func (u *pageUnit) StageCounterBucket(runID string, worker uint32, bucket *v3.LedgerCounterBucket) error {
+	if runID == "" {
+		return errors.New("StageCounterBucket: empty attempt ID")
+	}
 	if u.done {
 		return ErrPageUnitCommitted
 	}
@@ -138,6 +234,17 @@ func (u *pageUnit) StageGrants(records ...*v3.GrantRecord) error {
 	return nil
 }
 
+func (u *pageUnit) StageAsset(record *v3.AssetRecord) error {
+	if u.done {
+		return ErrPageUnitCommitted
+	}
+	if record == nil {
+		return errors.New("StageAsset: nil record")
+	}
+	u.assets = append(u.assets, record)
+	return nil
+}
+
 // Latest staged wins, matching the commit's last-occurrence dedup.
 func (u *pageUnit) resourceRecord(ctx context.Context, resourceTypeID, resourceID string) (*v3.ResourceRecord, error) {
 	if u.done {
@@ -146,7 +253,7 @@ func (u *pageUnit) resourceRecord(ctx context.Context, resourceTypeID, resourceI
 	if i, ok := u.resourceIdx[resourceBufKey{resourceTypeID, resourceID}]; ok {
 		return u.resources[i], nil
 	}
-	return u.l.e.GetResourceRecord(ctx, resourceTypeID, resourceID)
+	return u.l.e.records.GetResourceRecord(ctx, resourceTypeID, resourceID)
 }
 
 // A record whose refs derive no identity could not have been stored, so it
@@ -330,9 +437,9 @@ func (u *pageUnit) entitlementRecord(ctx context.Context, externalID string) (*v
 	}
 	indices := u.entitlementIdx[externalID]
 	if len(indices) == 0 {
-		return u.l.e.GetEntitlementRecord(ctx, externalID)
+		return u.l.e.records.GetEntitlementRecord(ctx, externalID)
 	}
-	stored, err := u.l.e.entitlementIdentitiesForExternalID(ctx, externalID)
+	stored, err := u.l.e.records.entitlementIdentitiesForExternalID(ctx, externalID)
 	if err != nil {
 		return nil, err
 	}
@@ -358,7 +465,7 @@ func (u *pageUnit) entitlementRecord(ctx context.Context, externalID string) (*v
 }
 
 func (u *pageUnit) entitlementIdentities(ctx context.Context, externalID string) ([]entitlementIdentity, error) {
-	stored, err := u.l.e.entitlementIdentitiesForExternalID(ctx, externalID)
+	stored, err := u.l.e.records.entitlementIdentitiesForExternalID(ctx, externalID)
 	if err != nil {
 		return nil, err
 	}
@@ -391,6 +498,8 @@ func (u *pageUnit) Commit(ctx context.Context, id c1zstore.LedgerActionIdentity,
 		row = cloneLedgerRow(row)
 	}
 	row.SetIdentity(ledgerIdentityToProto(id))
+	row.SetWorkId(0)
+	row.SetWorkRevision(0)
 	if row.GetCommittedAt() == nil {
 		row.SetCommittedAt(timestamppb.Now())
 	}
@@ -398,9 +507,13 @@ func (u *pageUnit) Commit(ctx context.Context, id c1zstore.LedgerActionIdentity,
 		row.SetNextPageTokenHash(ledgerTokenHash(row.GetNextPageToken()))
 	}
 	for _, c := range row.GetChildren() {
+		c.SetWorkId(0)
 		if id := c.GetIdentity(); len(id.GetPageTokenHash()) == 0 {
 			id.SetPageTokenHash(ledgerTokenHash(id.GetPageToken()))
 		}
+	}
+	if err := u.requireRestartShape(row); err != nil {
+		return err
 	}
 	if len(u.grantDeletes) > 0 && len(u.grants) > 0 {
 		doomed := make(map[grantIdentity]struct{}, len(u.grantDeletes))
@@ -428,30 +541,67 @@ func (u *pageUnit) Commit(ctx context.Context, id c1zstore.LedgerActionIdentity,
 		if err := u.requireSameSync(); err != nil {
 			return err
 		}
-		if err := l.markInFlightLocked(); err != nil {
-			return err
-		}
 		batch := l.e.db.NewRecordBatch()
 		defer batch.Close()
+		if err := l.stageMarkInFlight(batch); err != nil {
+			return err
+		}
 
+		if err := u.stagePhaseLocked(batch, row); err != nil {
+			return err
+		}
+		if u.work != nil {
+			var restart *restartTransition
+			if u.restart != nil {
+				restart = &restartTransition{limits: *u.restart, bucketKey: u.bucketKey, bucket: u.bucketValue}
+			}
+			if err := l.stageWorkTransition(ctx, batch, *u.work, id, row, u.childWorkKeys, restart); err != nil {
+				return err
+			}
+			key = encodeWorkHistoryKey(id, u.work.ID, u.work.Revision)
+			row.SetWorkId(u.work.ID)
+			row.SetWorkRevision(u.work.Revision)
+		}
 		resourceTypes, err := stageResourceTypeRecords(batch, u.resourceTypes)
 		if err != nil {
 			return err
 		}
-		resources, err := l.e.stageResourceRecords(batch, u.resources)
+		stageResources := l.e.records.stageResourceRecords
+		stageEntitlements := l.e.records.stageEntitlementRecords
+		stageGrants := l.e.records.stageGrantRecords
+		if u.trustedImport {
+			stageResources = stageTrustedResourceRecords
+			stageEntitlements = stageTrustedEntitlementRecords
+			stageGrants = stageTrustedGrantRecords
+			// Same contract as bulk import: later plain stagers in this sync
+			// must read before writing so overwrites clean up index entries.
+			_ = l.e.takeFreshResourcesEmpty()
+			_ = l.e.takeFreshEntitlementsEmpty()
+			_ = l.e.takeFreshGrantsEmpty()
+		}
+		resources, err := stageResources(batch, u.resources)
 		if err != nil {
 			return err
 		}
-		entitlements, err := l.e.stageEntitlementRecords(batch, u.entitlements)
+		entitlements, err := stageEntitlements(batch, u.entitlements)
 		if err != nil {
 			return err
 		}
-		grants, err := l.e.stageGrantRecords(batch, u.grants)
+		grants, err := stageGrants(batch, u.grants)
 		if err != nil {
 			return err
+		}
+		for _, asset := range u.assets {
+			value, err := marshalRecord(asset)
+			if err != nil {
+				return err
+			}
+			if err := batch.StageAssetPut(encodeAssetKey(asset.GetExternalId()), value); err != nil {
+				return err
+			}
 		}
 		for _, id := range u.grantDeletes {
-			if _, err := l.e.stageGrantDeleteIfPresentLocked(batch, id); err != nil {
+			if _, err := l.e.records.stageGrantDeleteIfPresentLocked(batch, id); err != nil {
 				return err
 			}
 		}
@@ -492,8 +642,9 @@ func (u *pageUnit) Commit(ctx context.Context, id c1zstore.LedgerActionIdentity,
 		if err := batch.Commit(recordWriteOpts); err != nil {
 			return err
 		}
+		l.inFlight.Store(true)
 		if len(u.entitlements) > 0 {
-			l.e.noteEntitlementKeyspaceWrite()
+			l.e.records.noteEntitlementKeyspaceWrite()
 		}
 		return nil
 	})
@@ -509,10 +660,15 @@ func (u *pageUnit) Discard() { u.release() }
 func (u *pageUnit) release() {
 	u.done = true
 	u.resourceTypes, u.resources, u.entitlements, u.grants = nil, nil, nil, nil
+	u.assets = nil
 	u.resourceIdx, u.entitlementIdx = nil, nil
 	u.grantDeletes = nil
 	u.facts = nil
 	u.bucketKey, u.bucketValue = nil, nil
+	u.work, u.childWorkKeys = nil, nil
+	u.restart = nil
+	u.trustedImport = false
+	u.sealing = false
 }
 
 // sync_id is not in the keys, so a page begun under a previous sync would

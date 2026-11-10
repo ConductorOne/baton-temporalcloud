@@ -1,5 +1,11 @@
 package sync //nolint:revive,nolintlint // we can't change the package name for backwards compatibility
 
+import (
+	"context"
+
+	"github.com/conductorone/baton-sdk/pkg/dotc1z/c1zstore"
+)
+
 // syncTestHooks is the syncer's set of test seams: observation and
 // fault-injection points the verification harnesses attach to in order to
 // make an ordering-sensitive boundary reachable from a test. Every field is
@@ -13,16 +19,16 @@ package sync //nolint:revive,nolintlint // we can't change the package name for 
 // carry no `test` prefix of their own — any `test`-prefixed field elsewhere
 // in the package is a seam that escaped this struct.
 type syncTestHooks struct {
+	ledgerCommitted func(c1zstore.LedgerRow)
+	ledgerStop      func(context.Context)
+	ledgerWalk      func(bool)
+	ledgerHandler   func(context.Context, *ledgerPage, *Action) error
 	// ingestHaltHook, when non-nil, fires at named seams of the
 	// ingestion-invariant pass (see ingestInvariantHaltStages);
 	// returning an error fails the sync at exactly that boundary. The
 	// halt sweep uses it to prove crash/resume equivalence at every
 	// ordering-sensitive point.
 	ingestHaltHook func(stage string) error
-	// checkpointHook, when non-nil, observes every durably written
-	// checkpoint token. The cut harness uses it to count checkpoints
-	// and to simulate a crash immediately after a chosen one.
-	checkpointHook func(token string)
 	// queueAudit, when non-nil, records every parallelActionQueue
 	// event (seed/dequeue/commit/abort/done) for post-hoc verification
 	// of the queue contract.

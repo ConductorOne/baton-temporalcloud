@@ -16,9 +16,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/proto"
 
-	v2pb "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	reader_v2 "github.com/conductorone/baton-sdk/pb/c1/reader/v2"
-	v3 "github.com/conductorone/baton-sdk/pb/c1/storage/v3"
 	"github.com/conductorone/baton-sdk/pkg/dotc1z/engine/pebble/codec"
 	"github.com/conductorone/baton-sdk/pkg/dotc1z/engine/pebble/internal/rawdb"
 )
@@ -40,24 +38,16 @@ type Engine struct {
 	opts       *Options
 	pebbleOpts *pebble.Options
 
-	// Embedded Unimplemented stubs for the gRPC service surfaces the
-	// engine's connectorstore face (adapter.go / adapter_reader.go)
-	// implements partially. Each implemented method overrides the
-	// stub. GrantsReaderServiceServer is deliberately NOT stubbed: the
-	// engine implements it in full, and adapter_reader.go asserts the
-	// complete contract — re-adding the stub would make that assertion
-	// vacuous.
-	v2pb.UnimplementedResourceTypesServiceServer
-	reader_v2.UnimplementedResourceTypesReaderServiceServer
-	v2pb.UnimplementedResourcesServiceServer
-	reader_v2.UnimplementedResourcesReaderServiceServer
-	v2pb.UnimplementedEntitlementsServiceServer
-	reader_v2.UnimplementedEntitlementsReaderServiceServer
-	v2pb.UnimplementedGrantsServiceServer
+	// GetSync, ListSyncs, and GetLatestFinishedSync stay on Engine, so
+	// this stub stays with them. The record-service stubs live on Records.
 	reader_v2.UnimplementedSyncsReaderServiceServer
 
+	// corruption is the first on-disk corruption pebble reported for
+	// this engine's files.
+	corruption atomic.Pointer[pebble.DataCorruptionInfo]
+
 	// lifecycleMu serializes the sync-lifecycle transitions
-	// (StartNewSync/ResumeSync/SetCurrentSync/CheckpointSync/EndSync),
+	// (StartNewSync/ResumeSync/SetCurrentSync/EndSync),
 	// whose bodies are read-check-write sequences over the sync-run
 	// record + the currentSync binding. Formerly the Adapter layer's
 	// mutex; the record writes themselves ride the write barrier.
@@ -108,50 +98,11 @@ type Engine struct {
 	freshEntitlementsEmpty bool
 	freshResourcesEmpty    bool
 
-	// computedStats holds caller-computed stats records stashed via
-	// StashComputedSyncStats, keyed by sync_id. PersistSyncStats pops
-	// and persists the stashed record instead of re-scanning the
-	// keyspaces — used by bulk imports that already counted every
-	// record they wrote.
-	computedStatsMu  sync.Mutex
-	computedStats    map[string]*v3.SyncStatsRecord
-	syncStatsOverlay map[string]*v3.SyncStatsRecord
-
-	// deferredGrantStats holds the grant counts BuildDeferredGrantIndexes
-	// accumulated while scanning the whole grant primary keyspace, so
-	// computeSyncStats can skip its own O(grants) scan at EndSync. Consumed
-	// once, guarded by sync_id.
-	deferredGrantStatsMu sync.Mutex
-	deferredGrantStats   *deferredGrantStats
-
 	// The deferred-index rebuild flag and the digests-present flag live
 	// ON rawdb (e.db.DeferredIdxPending / e.db.GrantDigestsPresent):
 	// they are write-side crash-contract state the choke point's typed
 	// record ops consume directly (the deferred regime arms the marker;
 	// the digest-invalidation obligation gates on presence).
-
-	// grantDigestBuildPending mirrors the durable digest-build marker
-	// (encodeGrantDigestBuildPendingKey): true between a digest build's
-	// arm and its completion (or the drop that cleans up after it). A
-	// writable Open that finds the durable marker drops all digest state
-	// immediately, so on a writable engine this is only ever true while
-	// a build owns the write barrier or after an in-process build
-	// failure whose cleanup drop itself failed. A READ-ONLY Open cannot
-	// drop, so the flag stays set and the digest root getters
-	// (getPartitionDigestRoot, GetGrantDigestGlobalRoot) report "never
-	// built" instead of trusting nodes a crashed build half-committed.
-	grantDigestBuildPending atomic.Bool
-
-	// grantDigestAbiStale is the read-only-open counterpart of the ABI
-	// check in verifyGrantDigestABI: true when the file holds digest
-	// nodes whose stamp (rawdb.GrantDigestABIStampKey) does not name
-	// the current GrantDigestABIVersion — state built by different hash
-	// code, e.g. a file sealed by an older SDK. A writable Open drops
-	// such state instead of setting this, so on a writable engine it is
-	// always false; on a read-only engine it makes the digest root
-	// getters report "never built" (the same fail-safe shape as
-	// grantDigestBuildPending above), and consumers recalculate.
-	grantDigestAbiStale atomic.Bool
 
 	// test holds every test-only injection seam, sequestered on one
 	// field so hooks don't accumulate on the production struct. All
@@ -170,15 +121,11 @@ type Engine struct {
 	// resumeCompactions (package-private; see those funcs for why).
 	compactionScheduler *pausableCompactionScheduler
 
-	// Lazy bare-id entitlement lookup (see lookup.go). entIDLookupGen is
-	// bumped by every entitlement-keyspace mutation; the map rebuilds on the
-	// next lookup when its built generation is stale.
-	entIDLookupGen      atomic.Uint64
-	entIDLookupMu       sync.Mutex
-	entIDLookup         map[string][]entitlementIdentity
-	entIDLookupBuiltGen uint64
-
-	ledger Ledger
+	ledger    Ledger
+	syncRuns  SyncRuns
+	digests   Digests
+	expansion Expansion
+	records   Records
 
 	// migratedOnOpen reports that this Open ran the in-place id-index
 	// migration. The store layer uses it to mark a writable store dirty so
@@ -202,7 +149,12 @@ func Open(ctx context.Context, dir string, opts ...Option) (*Engine, error) {
 		opt(o)
 	}
 
-	pebbleOpts := newPebbleOptions(o)
+	// The listener runs on pebble goroutines from rawdb.Open onward, so
+	// the Engine it records into must exist first.
+	e := &Engine{dbDir: dir, opts: o}
+	pebbleOpts := newPebbleOptions(o, func(info pebble.DataCorruptionInfo) {
+		e.corruption.CompareAndSwap(nil, &info)
+	})
 
 	// DELIBERATE ASYMMETRY (do not "fix"): rawdb gets the UNWRAPPED FS
 	// (o.vfs, nil → vfs.Default), while pebble.Open internally wraps
@@ -228,15 +180,15 @@ func Open(ctx context.Context, dir string, opts ...Option) (*Engine, error) {
 		return nil, fmt.Errorf("pebble.Open: %w", err)
 	}
 
-	e := &Engine{
-		db:         db,
-		dbDir:      dir,
-		opts:       o,
-		pebbleOpts: pebbleOpts,
-		resolvedFS: db.FS(),
-	}
+	e.db = db
+	e.pebbleOpts = pebbleOpts
+	e.resolvedFS = db.FS()
 	e.binding.Store(&syncBinding{})
 	e.ledger.e = e
+	e.syncRuns.e = e
+	e.digests.e = e
+	e.expansion.e = e
+	e.records.e = e
 	if s, ok := pebbleOpts.Experimental.CompactionScheduler.(*pausableCompactionScheduler); ok {
 		e.compactionScheduler = s
 	}
@@ -353,15 +305,15 @@ func (e *Engine) initKeyspaceStateLocked(ctx context.Context) error {
 	switch {
 	case err == nil:
 		closer.Close()
-		e.grantDigestBuildPending.Store(true)
+		e.digests.grantDigestBuildPending.Store(true)
 		if !e.opts.readOnly {
 			ctxzap.Extract(ctx).Warn("pebble: interrupted grant digest build detected at open; dropping all digest state — the next EndSync rebuilds it from scratch")
-			if err := e.dropAllGrantDigestStateLocked(); err != nil {
+			if err := e.digests.dropAllGrantDigestStateLocked(); err != nil {
 				return fmt.Errorf("pebble: drop digest state left by an interrupted build: %w", err)
 			}
 		}
 	case errors.Is(err, pebble.ErrNotFound):
-		e.grantDigestBuildPending.Store(false)
+		e.digests.grantDigestBuildPending.Store(false)
 	default:
 		return err
 	}
@@ -379,7 +331,7 @@ func (e *Engine) initKeyspaceStateLocked(ctx context.Context) error {
 	// read-only open flags them so the root getters report "never
 	// built". Runs after the probe so it sees post-marker-recovery
 	// presence, and its own drop re-falses the flag.
-	if err := e.verifyGrantDigestABI(ctx, e.opts.readOnly); err != nil {
+	if err := e.digests.verifyGrantDigestABI(ctx, e.opts.readOnly); err != nil {
 		return err
 	}
 	// Arm the mutation-path source-scope index obligations iff the file
@@ -412,7 +364,7 @@ func (e *Engine) Close() error {
 	// A leaked synthesized-grant layer session (possible only if a panic
 	// unwound past the expansion driver's Abort) has a worker merging into
 	// its staging dir; drain it before tearing the DB down.
-	_ = e.abortSynthesizedGrantLayerLocked(context.Background())
+	_ = e.records.abortSynthesizedGrantLayerLocked(context.Background())
 	// Invariant: flush before close on any write path. This drives the
 	// memtable out to an SST so a Close is never the step that leaves
 	// un-materialized writes behind — independent of whether EndSync or
@@ -606,7 +558,7 @@ func (e *Engine) GrantDigestsPresent() bool { return e.db.GrantDigestsPresent() 
 // recompute from it — see getPartitionDigestRoot,
 // GetGrantDigestGlobalRoot, and ComputeEntitlementBucketDigest.
 func (e *Engine) grantDigestStateUntrusted() bool {
-	return e.grantDigestBuildPending.Load() || e.grantDigestAbiStale.Load()
+	return e.digests.grantDigestBuildPending.Load() || e.digests.grantDigestAbiStale.Load()
 }
 
 // takeFreshGrantsEmpty / takeFreshResourcesEmpty return true
@@ -839,7 +791,7 @@ func (e *Engine) CurrentDBSizeBytes() (int64, error) {
 // state (see lookup.go). Engine write paths call this internally; it
 // is exported for callers that mutate the entitlement keyspace through
 // the merge surface (merge_surface.go) directly.
-func (e *Engine) InvalidateBareIDLookups() { e.noteEntitlementKeyspaceWrite() }
+func (e *Engine) InvalidateBareIDLookups() { e.records.noteEntitlementKeyspaceWrite() }
 
 // MigratedOnOpen reports whether this Open ran the in-place id-index
 // migration (see migratedOnOpen).
@@ -918,6 +870,11 @@ func (e *Engine) CheckpointTo(ctx context.Context, destDir string) error {
 	defer e.writeMu.Unlock()
 	if e.db == nil {
 		return ErrEngineClosing
+	}
+	// A background compaction can find corruption that no caller's read
+	// returned. Refuse rather than ship the corrupt table in a new artifact.
+	if c := e.corruption.Load(); c != nil {
+		return fmt.Errorf("pebble: refusing to checkpoint a keyspace with on-disk corruption: %w", c.Details)
 	}
 
 	if e.opts.readOnly {
