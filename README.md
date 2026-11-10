@@ -40,10 +40,11 @@ baton resources
 - Users
 - Service Accounts
 - Account Roles
-- API Keys
+- API Keys (service-account-owned and user-owned)
 
 It also supports credential vending: C1 can issue a Temporal Cloud API key for
-an existing service account and revoke it again. See
+an existing service account, through the `issue_service_account_api_key` action,
+and revoke it again. See
 [docs/connector.mdx](docs/connector.mdx#credential-vending) for the required
 issuer permissions and the expiry and revocation behavior.
 

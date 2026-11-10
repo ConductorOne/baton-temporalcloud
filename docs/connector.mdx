@@ -227,67 +227,75 @@ key is.
   service-account API keys: a **Global Administrator** or **Account Owner**.
   Namespace Admins can manage keys for the Namespace-scoped service accounts
   they administer, but not account-wide ones.
-- **Sync of the API keys resource type needs account-wide read as well.** The
+- **Sync of the API key resource types needs account-wide read as well.** The
   connector lists every API key in the account to build that inventory, and
   Temporal Cloud lets only Global Administrators and Account Owners monitor
   another identity's keys. A lesser principal may be refused, or may see only
-  its own keys — which C1 would read as every other key having been deleted. Use
+  its own keys, which C1 would read as every other key having been deleted. Use
   a Global Administrator or Account Owner credential for a tenant that selects
-  the API keys resource type.
+  an API key resource type.
 - The service account that receives the credential must already exist and be
   synced into C1. C1 never creates a service account to satisfy a request.
-- The **API keys** resource type must be selected in the connector's sync
-  selection. C1 skips a credential offering whose secret resource type is not
-  synced, so the offering does not appear until the type is selected and a sync
-  has completed.
+- The **Service Account API Key** resource type must be selected in the
+  connector's sync selection. C1 skips a credential offering whose secret
+  resource type is not synced, so the offering does not appear until the type is
+  selected and a sync has completed.
+
+### Resource types
+
+Temporal Cloud API keys sync as two secret resource types, one per owner kind:
+
+- **Service Account API Key** (`service-account-api-key`): keys owned by a
+  service account. This type has the issuer.
+- **User API Key** (`user-api-key`): keys owned by a user. Synced and revocable,
+  but C1 cannot vend them.
+
+### The issuer
+
+The service-account key type carries one action, `issue_service_account_api_key`,
+which C1 recognizes as a credential issuer from its schema. A credential offering
+needs these values:
+
+| Argument | Set by | Meaning |
+| --- | --- | --- |
+| `service_account_id` | the request | The service account that owns the key. |
+| `lifetime_days` | the offering (fixed by an admin) | Days until Temporal Cloud expires the key, 1 to 730. |
+
+Temporal Cloud requires every API key to have an expiry, and the action receives
+no requested expiry, so the lifetime is part of the offering. C1 also revokes a
+credential at the end of the offering duration, and the earlier of the two wins:
+set `lifetime_days` at least as long as the offering duration, otherwise the
+provider expires the key first.
 
 ### Vended credentials
 
 - A vended key belongs to the service account the request targets and inherits
   that account's permissions. The connector does not create or modify users,
   service accounts, or their namespace assignments.
-- Temporal Cloud shows a key's secret only once, at creation. C1 delivers it
-  through the request's vault; if the secret is lost, revoke the key and request
-  a new one.
-- Expiry is set on the provider. When the request supplies a lifetime, the
-  connector passes that exact instant to Temporal Cloud, reads it back, and
-  reports the expiry **the provider recorded** — not the one it asked for. An
-  expiry later than the approved deadline is refused outright and the key is
-  rolled back: the connector will not return a credential that outlives what was
-  approved. When the request supplies none, the connector applies a **90-day**
-  default of its own.
-- The accepted window is **1 minute to 2 years**. The 2-year ceiling is Temporal
-  Cloud's documented maximum; the 1-minute floor is the connector's own, since
-  Temporal Cloud documents no minimum API-key lifetime. The default and the
-  floor are connector policy, not provider limits.
-- Revoking a credential deletes that one API key at Temporal Cloud. The service
-  account, its other keys, and its namespace assignments are left untouched. A
-  key that is already gone is treated as successfully revoked.
+- The key is returned as a Multipass `api_key_v2` secret: `key_value` is the
+  key, `provider` is `temporalcloud`, and `key_id` is the Temporal Cloud key id.
+  Temporal Cloud shows a key's secret only once, at creation. If it is lost,
+  revoke the key and request a new one.
+- Keys are named `c1-<UTC timestamp>-<6 random characters>`, for example
+  `c1-20261110T201426Z-k3x9qa`.
+- The connector awaits the provider's create, reads the key back, and checks its
+  owner and expiry against what was asked for before returning anything. The
+  expiry on the returned secret is the one **the provider recorded**. An expiry
+  later than the approved deadline is refused and the key is deleted: the
+  connector will not return a credential that outlives what was approved.
+- If the connector creates a key and then cannot return it (the create does not
+  complete, the read-back disagrees, the secret is missing), it deletes that key
+  so nobody is left holding an unreachable credential. If the delete also fails,
+  the error names the key so an operator can revoke it.
+- The action has no request id, so there is no deduplication: each call creates
+  a new key. Temporal Cloud returns a key's secret only once, so an earlier key
+  could never be handed back anyway.
+- Revoking a credential deletes that one API key at Temporal Cloud and waits for
+  the provider to finish. The service account, its other keys, and its namespace
+  assignments are left untouched. A key that is already gone is treated as
+  successfully revoked. A key the provider is still deleting is waited out; one
+  whose delete failed is deleted again, or fails the revoke if the provider
+  reports `DELETE_FAILED` while we wait, since that key can still authenticate.
 - Temporal Cloud limits each service account to **20 non-expired API keys**.
   When that limit is reached, issuance fails with the provider's error and no
   key is created; revoke an existing key and retry.
-- A retried request does not create a second key. Each request carries a
-  deterministic identity derived from its C1 request id, and the connector
-  refuses to mint when a credential for that identity already exists. It checks
-  the key listing first, and consults the provider's own operation record as a
-  second, independent read. Temporal Cloud returns a key's secret only once, so
-  an existing key cannot be handed back: the connector reports the existing
-  key's id instead, and the request id is then spent — revoke that key if it is
-  not in use, and **raise a new request**. When no key is found, there is
-  nothing to revoke and a new request is still required.
-- Two attempts that reach the provider concurrently are the one case this does
-  not cover. Each carries the same request identity, so a provider that
-  deduplicates on it will collapse them — but Temporal Cloud does not document
-  that it does, and the connector holds no lock. Containment there comes from C1
-  serialising issuance for a request and not retrying an ambiguous issuance
-  automatically.
-- When the provider gives no verdict — an unreadable operation record, an
-  unreadable key listing, or a create whose outcome is unknown — the connector
-  fails closed rather than minting. It never deletes a key it cannot prove was
-  never delivered, because deleting a delivered credential would be a silent
-  revocation; a key left behind is named in the error instead.
-- An attempt that reports failure does not license a second one. If the provider
-  recorded an operation for the request, the connector refuses even when the key
-  listing is empty: the failure does not prove no key was created — a create can
-  commit and then report a failure — and an empty listing does not supply that
-  proof either. The request id is spent; raise a new request.
