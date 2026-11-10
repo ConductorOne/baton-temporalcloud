@@ -17,26 +17,6 @@
     },
     {
       "resourceType": {
-        "id": "api-key",
-        "displayName": "API Key",
-        "traits": [
-          "TRAIT_SECRET"
-        ],
-        "annotations": [
-          {
-            "@type": "type.googleapis.com/c1.connector.v2.SkipEntitlementsAndGrants"
-          }
-        ],
-        "description": "A Temporal Cloud API key. Owned by, and carrying the permissions of, one user or service account."
-      },
-      "capabilities": [
-        "CAPABILITY_SYNC",
-        "CAPABILITY_RESOURCE_DELETE"
-      ],
-      "permissions": {}
-    },
-    {
-      "resourceType": {
         "id": "namespace",
         "displayName": "Namespace"
       },
@@ -60,25 +40,29 @@
         ]
       },
       "capabilities": [
-        "CAPABILITY_SYNC",
-        "CAPABILITY_CREDENTIAL_ISSUE",
-        "CAPABILITY_CREDENTIAL_ENCRYPTION_JWE_XWING_V1"
+        "CAPABILITY_SYNC"
       ],
-      "permissions": {},
-      "credentialIssue": {
-        "options": [
+      "permissions": {}
+    },
+    {
+      "resourceType": {
+        "id": "service-account-api-key",
+        "displayName": "Service Account API Key",
+        "traits": [
+          "TRAIT_SECRET"
+        ],
+        "annotations": [
           {
-            "option": "CAPABILITY_DETAIL_CREDENTIAL_OPTION_API_KEY",
-            "expiry": {
-              "min": "60s",
-              "max": "63072000s"
-            },
-            "resourceMode": "CREDENTIAL_RESOURCE_MODE_DISCOVERABLE",
-            "secretResourceTypeId": "api-key"
+            "@type": "type.googleapis.com/c1.connector.v2.SkipEntitlementsAndGrants"
           }
         ],
-        "preferredOption": "CAPABILITY_DETAIL_CREDENTIAL_OPTION_API_KEY"
-      }
+        "description": "A Temporal Cloud API key owned by, and carrying the permissions of, one service account."
+      },
+      "capabilities": [
+        "CAPABILITY_SYNC",
+        "CAPABILITY_RESOURCE_DELETE"
+      ],
+      "permissions": {}
     },
     {
       "resourceType": {
@@ -99,6 +83,26 @@
         "CAPABILITY_RESOURCE_DELETE"
       ],
       "permissions": {}
+    },
+    {
+      "resourceType": {
+        "id": "user-api-key",
+        "displayName": "User API Key",
+        "traits": [
+          "TRAIT_SECRET"
+        ],
+        "annotations": [
+          {
+            "@type": "type.googleapis.com/c1.connector.v2.SkipEntitlementsAndGrants"
+          }
+        ],
+        "description": "A Temporal Cloud API key owned by, and carrying the permissions of, one user."
+      },
+      "capabilities": [
+        "CAPABILITY_SYNC",
+        "CAPABILITY_RESOURCE_DELETE"
+      ],
+      "permissions": {}
     }
   ],
   "connectorCapabilities": [
@@ -106,8 +110,7 @@
     "CAPABILITY_SYNC",
     "CAPABILITY_ACCOUNT_PROVISIONING",
     "CAPABILITY_RESOURCE_DELETE",
-    "CAPABILITY_CREDENTIAL_ISSUE",
-    "CAPABILITY_CREDENTIAL_ENCRYPTION_JWE_XWING_V1"
+    "CAPABILITY_ACTIONS"
   ],
   "credentialDetails": {
     "capabilityAccountProvisioning": {
