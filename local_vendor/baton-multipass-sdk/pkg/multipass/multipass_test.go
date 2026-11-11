@@ -22,7 +22,9 @@ func TestAPIKeyV2JSON(t *testing.T) {
 		ExpiresAt:  "2027-01-01",
 	})
 	require.NoError(t, err)
-	require.Equal(t, `{"key_value":"dd-key","provider":"datadog","base_url":"https://api.datadoghq.com","scopes":["read"],"key_id":"key-id","header_name":"DD-API-KEY","expires_at":"2027-01-01"}`, string(full))
+	want := `{"key_value":"dd-key","provider":"datadog","base_url":"https://api.datadoghq.com",` +
+		`"scopes":["read"],"key_id":"key-id","header_name":"DD-API-KEY","expires_at":"2027-01-01"}`
+	require.Equal(t, want, string(full))
 
 	minimal, err := json.Marshal(APIKeyV2{KeyValue: "dd-key"})
 	require.NoError(t, err)
