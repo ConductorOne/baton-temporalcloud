@@ -6,7 +6,9 @@ The upstream module is private; this copy exists until it is public (IGA-5320).
 
 Do not edit this code to diverge from upstream.
 
-To swap in the public module: delete the `replace` line for
-`github.com/conductorone/baton-multipass-sdk` in the root `go.mod`, delete this
-`local_vendor/baton-multipass-sdk` directory, bump the `require` version, then
-run `go mod tidy && go mod vendor`.
+This directory is an ordinary package of the connector module (no nested
+`go.mod`, no `require`, no `replace`), imported as
+`github.com/conductorone/baton-temporalcloud/local_vendor/baton-multipass-sdk/pkg/multipass`.
+
+To switch to the public module: add it to the root `go.mod`, change the import
+path, delete this directory, then run `go mod tidy && go mod vendor`.

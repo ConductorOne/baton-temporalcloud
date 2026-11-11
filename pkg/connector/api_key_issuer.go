@@ -16,12 +16,12 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/conductorone/baton-multipass-sdk/pkg/multipass"
 	configv1 "github.com/conductorone/baton-sdk/pb/c1/config/v1"
 	v2 "github.com/conductorone/baton-sdk/pb/c1/connector/v2"
 	"github.com/conductorone/baton-sdk/pkg/actions"
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	rs "github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/conductorone/baton-temporalcloud/local_vendor/baton-multipass-sdk/pkg/multipass"
 
 	cloudservicev1 "go.temporal.io/cloud-sdk/api/cloudservice/v1"
 	identityv1 "go.temporal.io/cloud-sdk/api/identity/v1"
