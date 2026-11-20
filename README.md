@@ -1,4 +1,4 @@
-![Baton Logo](./docs/images/baton-logo.png)
+![Baton Logo](./baton-logo.png)
 
 # `baton-temporalcloud` [![Go Reference](https://pkg.go.dev/badge/github.com/conductorone/baton-temporalcloud.svg)](https://pkg.go.dev/github.com/conductorone/baton-temporalcloud) ![ci](https://github.com/conductorone/baton-temporalcloud/actions/workflows/ci.yaml/badge.svg) ![verify](https://github.com/conductorone/baton-temporalcloud/actions/workflows/verify.yaml/badge.svg)
 
